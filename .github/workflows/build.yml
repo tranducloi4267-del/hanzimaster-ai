@@ -1,0 +1,136 @@
+name: Build HanziMaster AI (Windows .exe & Android .apk)
+
+on:
+  push:
+    branches: [main, master]
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  check-and-test:
+    name: Kiểm tra TypeScript & Unit Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cài đặt thư viện
+        run: npm install --legacy-peer-deps
+
+      - name: Kiểm tra biên dịch TypeScript
+        run: npm run typecheck
+
+      - name: Chạy Unit Tests
+        run: npm test
+
+  build-windows:
+    name: Build Windows (.exe NSIS & Portable)
+    needs: check-and-test
+    runs-on: windows-latest
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cài đặt thư viện
+        run: npm install --legacy-peer-deps
+
+      - name: Đóng gói Windows .exe (NSIS + Portable)
+        run: npm run build:win
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - name: Tải lên Artifact Windows (.exe)
+        uses: actions/upload-artifact@v4
+        with:
+          name: HanziMaster-Windows-exe
+          path: |
+            release/*.exe
+          if-no-files-found: error
+
+  build-android:
+    name: Build Android (.apk qua Capacitor 7)
+    needs: check-and-test
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout mã nguồn
+        uses: actions/checkout@v4
+
+      - name: Cài đặt Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Cài đặt Java JDK 21 (chuẩn Capacitor 7)
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - name: Cài đặt Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Cài đặt thư viện
+        run: npm install --legacy-peer-deps
+
+      - name: Build giao diện Web production
+        run: npm run build:web
+
+      - name: Khởi tạo dự án Android Capacitor 7 & chèn Native EdgeTtsPlugin
+        run: |
+          if [ ! -d "android" ]; then
+            npx cap add android
+          fi
+          node scripts/sync-android-plugin.mjs
+          npx cap sync android
+
+      - name: Biên dịch bản cài ngay (Debug APK)
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk ../HanziMaster-AI-debug.apk
+
+      - name: Biên dịch & ký Release APK (tự động nếu có Keystore Secrets)
+        working-directory: android
+        env:
+          KEYSTORE_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASS: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          ./gradlew assembleRelease
+          if [ -n "$KEYSTORE_B64" ] && [ -n "$KEYSTORE_PASS" ] && [ -n "$KEY_ALIAS" ] && [ -n "$KEY_PASS" ]; then
+            echo "$KEYSTORE_B64" | base64 --decode > release.keystore
+            APKSIGNER=$(find "$ANDROID_HOME/build-tools" -name apksigner | sort -V | tail -n 1)
+            ZIPALIGN=$(find "$ANDROID_HOME/build-tools" -name zipalign | sort -V | tail -n 1)
+            "$ZIPALIGN" -v -p 4 app/build/outputs/apk/release/app-release-unsigned.apk aligned.apk
+            "$APKSIGNER" sign --ks release.keystore --ks-pass "pass:$KEYSTORE_PASS" --ks-key-alias "$KEY_ALIAS" --key-pass "pass:$KEY_PASS" --out ../app-release.apk aligned.apk
+            rm -f release.keystore aligned.apk
+            echo "✓ Đã ký thành công app-release.apk"
+          else
+            cp app/build/outputs/apk/release/app-release-unsigned.apk ../app-release-unsigned.apk
+            cp ../HanziMaster-AI-debug.apk ../app-release.apk
+            echo "ℹ Chưa cấu hình Keystore Secrets -> xuất HanziMaster-AI-debug.apk & app-release.apk (bản cài trực tiếp)."
+          fi
+
+      - name: Tải lên Artifact Android (.apk)
+        uses: actions/upload-artifact@v4
+        with:
+          name: HanziMaster-Android-apk
+          path: |
+            app-release.apk
+            HanziMaster-AI-debug.apk
+          if-no-files-found: error

@@ -1,0 +1,32 @@
+appId: com.hanzimaster.ai
+productName: HanziMaster AI
+copyright: Copyright © 2026 HanziMaster AI
+directories:
+  output: release
+  buildResources: build-resources
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - package.json
+extraMetadata:
+  main: dist-electron/main.cjs
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: HanziMaster-AI-${target}.${ext}
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: HanziMaster AI
+  artifactName: HanziMaster-AI-Setup.${ext}
+portable:
+  artifactName: HanziMaster-AI-Portable.${ext}
+compression: normal
