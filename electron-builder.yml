@@ -30,3 +30,4 @@ nsis:
 portable:
   artifactName: HanziMaster-AI-Portable.${ext}
 compression: normal
+publish: null

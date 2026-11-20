@@ -45,7 +45,7 @@ if (fs.existsSync(buildGradlePath)) {
   let gradle = fs.readFileSync(buildGradlePath, 'utf8');
   if (!gradle.includes('com.squareup.okhttp3:okhttp')) {
     gradle = gradle.replace(
-      /dependencies\s*\{/,
+      /^dependencies\s*\{/m,
       `dependencies {\n    implementation "com.squareup.okhttp3:okhttp:4.12.0"`
     );
     fs.writeFileSync(buildGradlePath, gradle, 'utf8');

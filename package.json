@@ -15,7 +15,7 @@
     "build:electron": "node scripts/build-electron.mjs",
     "preview": "vite preview",
     "dev:electron": "npm run build:electron && concurrently -k \"vite\" \"wait-on http://localhost:5173 && cross-env NODE_ENV=development electron .\"",
-    "build:win": "npm run build && electron-builder --win --config electron-builder.yml",
+    "build:win": "npm run build && electron-builder --win --config electron-builder.yml --publish never",
     "build:android": "npm run build:web && node scripts/sync-android-plugin.mjs && cap sync android",
     "build:dict": "node scripts/build-offline-db.mjs"
   },
