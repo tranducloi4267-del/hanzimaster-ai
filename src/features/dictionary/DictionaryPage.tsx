@@ -2,13 +2,16 @@ import React, { useEffect, useState } from 'react';
 import { useSearchParams } from 'react-router-dom';
 import {
   Filter,
+  Flag,
   PenTool,
   Search,
   Volume2,
   X,
   BookOpen
 } from 'lucide-react';
+import { db } from '@/db/database';
 import { searchDictionary } from '@/services/dictionary/dictionaryService';
+import { markWordForgotten } from '@/services/fsrs/fsrsService';
 import { speakChinese } from '@/services/tts/ttsService';
 import { RADICALS_214 } from '@/data/radicals214';
 import { useAppStore } from '@/stores/useAppStore';
@@ -20,6 +23,7 @@ import { PeekableText } from '@/components/common/PeekableText';
 export const DictionaryPage: React.FC = () => {
   const [searchParams, setSearchParams] = useSearchParams();
   const hskStandard = useAppStore((s) => s.settings.hskStandard);
+  const pushToast = useAppStore((s) => s.pushToast);
 
   const [query, setQuery] = useState(searchParams.get('q') || '');
   const [hskLevel, setHskLevel] = useState<number>(0);
@@ -29,10 +33,36 @@ export const DictionaryPage: React.FC = () => {
   const [showFilters, setShowFilters] = useState(false);
 
   const [results, setResults] = useState<DictionaryEntry[]>([]);
+  const [forgottenIds, setForgottenIds] = useState<Set<string>>(new Set());
   const [searchTimeMs, setSearchTimeMs] = useState<number>(0);
   const [selectedWordId, setSelectedWordId] = useState<string>(
     searchParams.get('word') || ''
   );
+
+  useEffect(() => {
+    db.userVocab
+      .filter((v) => Boolean(v.isForgotten || v.isLeech))
+      .toArray()
+      .then((list) => setForgottenIds(new Set(list.map((x) => x.wordId))));
+  }, [selectedWordId]);
+
+  const handleQuickToggleForgotten = async (entry: DictionaryEntry, e: React.MouseEvent) => {
+    e.stopPropagation();
+    const isNowForgotten = !forgottenIds.has(entry.id);
+    await markWordForgotten(entry.id, entry.simplified, isNowForgotten, 'forgotten');
+    setForgottenIds((prev) => {
+      const next = new Set(prev);
+      if (isNowForgotten) next.add(entry.id);
+      else next.delete(entry.id);
+      return next;
+    });
+    pushToast(
+      isNowForgotten
+        ? `Đã thêm "${entry.simplified}" vào mục Từ quên theo mức độ!`
+        : `Đã gỡ "${entry.simplified}" khỏi Từ quên.`,
+      isNowForgotten ? 'warning' : 'info'
+    );
+  };
 
   useEffect(() => {
     const paramWord = searchParams.get('word');
@@ -275,17 +305,36 @@ export const DictionaryPage: React.FC = () => {
                         {item.meanings.join('; ')}
                       </PeekableText>
                     </div>
-                    <button
-                      type="button"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        speakChinese(item.simplified).catch(() => {});
-                      }}
-                      className="shrink-0 p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-brand-600"
-                      aria-label={`Nghe ${item.simplified}`}
-                    >
-                      <Volume2 className="w-4 h-4" />
-                    </button>
+                    <div className="flex items-center gap-1 shrink-0">
+                      <button
+                        type="button"
+                        onClick={(e) => handleQuickToggleForgotten(item, e)}
+                        className={`p-2 rounded-lg transition ${
+                          forgottenIds.has(item.id)
+                            ? 'bg-amber-100 text-amber-700 dark:bg-amber-950/70 dark:text-amber-300'
+                            : 'hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-400 hover:text-amber-600'
+                        }`}
+                        title={
+                          forgottenIds.has(item.id)
+                            ? 'Đã đánh dấu Từ quên (bấm để bỏ)'
+                            : 'Thêm vào mục Từ quên theo mức độ'
+                        }
+                        aria-label={`Đánh dấu quên ${item.simplified}`}
+                      >
+                        <Flag className="w-4 h-4" />
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          speakChinese(item.simplified).catch(() => {});
+                        }}
+                        className="p-2 rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-500 hover:text-brand-600"
+                        aria-label={`Nghe ${item.simplified}`}
+                      >
+                        <Volume2 className="w-4 h-4" />
+                      </button>
+                    </div>
                   </div>
                 );
               })

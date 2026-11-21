@@ -27,11 +27,13 @@ export interface AppState {
   isOnline: boolean;
   dbReady: boolean;
   seedProgress: { active: boolean; percent: number; message: string };
+  fullDbProgress: { active: boolean; percent: number; message: string };
   splitView: SplitViewState;
   quickSearchOpen: boolean;
   shadowingTarget: ShadowingTarget | null;
   toasts: ToastItem[];
   activeArcadeLessonId: string | null;
+  activeArcadeCustomWordIds: string[] | null;
 
   initApp: () => Promise<void>;
   updateSettings: (patch: Partial<AppSettings>) => Promise<void>;
@@ -39,6 +41,7 @@ export interface AppState {
   setOnline: (val: boolean) => void;
   setDbReady: (val: boolean) => void;
   setSeedProgress: (progress: { active: boolean; percent: number; message: string }) => void;
+  setFullDbProgress: (progress: { active: boolean; percent: number; message: string }) => void;
   openSplitWord: (wordId: string, mode?: 'word' | 'writing', char?: string) => void;
   openSplitDictionary: (searchQuery?: string) => void;
   closeSplitView: () => void;
@@ -46,6 +49,7 @@ export interface AppState {
   openShadowing: (target: ShadowingTarget) => void;
   closeShadowing: () => void;
   setActiveArcadeLessonId: (lessonId: string | null) => void;
+  setActiveArcadeCustomWordIds: (wordIds: string[] | null) => void;
   pushToast: (message: string, type?: ToastItem['type']) => void;
   dismissToast: (id: string) => void;
 }
@@ -90,11 +94,13 @@ export const useAppStore = create<AppState>()((set, get) => ({
   isOnline: typeof navigator !== 'undefined' ? navigator.onLine : true,
   dbReady: false,
   seedProgress: { active: false, percent: 0, message: '' },
+  fullDbProgress: { active: false, percent: 0, message: '' },
   splitView: { open: false, mode: 'dictionary' },
   quickSearchOpen: false,
   shadowingTarget: null,
   toasts: [],
   activeArcadeLessonId: null,
+  activeArcadeCustomWordIds: null,
 
   initApp: async () => {
     try {
@@ -144,6 +150,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   setOnline: (val) => set({ isOnline: val }),
   setDbReady: (val) => set({ dbReady: val }),
   setSeedProgress: (seedProgress) => set({ seedProgress }),
+  setFullDbProgress: (fullDbProgress) => set({ fullDbProgress }),
 
   openSplitWord: (wordId, mode = 'word', char) =>
     set({ splitView: { open: true, mode, wordId, char } }),
@@ -154,6 +161,7 @@ export const useAppStore = create<AppState>()((set, get) => ({
   openShadowing: (target) => set({ shadowingTarget: target }),
   closeShadowing: () => set({ shadowingTarget: null }),
   setActiveArcadeLessonId: (lessonId) => set({ activeArcadeLessonId: lessonId }),
+  setActiveArcadeCustomWordIds: (wordIds) => set({ activeArcadeCustomWordIds: wordIds }),
 
   pushToast: (message, type = 'info') => {
     const id = `t_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;

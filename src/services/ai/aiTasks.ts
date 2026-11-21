@@ -694,7 +694,7 @@ Trả về JSON:
   return res.data.explanations;
 }
 
-// 11. Chép lời Audio tiếng Trung (STT fallback cho Windows Electron)
+// 11. Chép lời Audio tiếng Trung hoặc tiếng Việt (STT fallback cho Windows Electron & Android dự phòng)
 const TranscribeSchema = z.object({
   transcript: z.string(),
   pinyin: z.string().default(''),
@@ -703,11 +703,15 @@ const TranscribeSchema = z.object({
 
 export async function transcribeChineseAudioAI(
   audioBase64: string,
-  mimeType: string
+  mimeType: string,
+  lang: 'zh-CN' | 'vi-VN' = 'zh-CN'
 ): Promise<z.infer<typeof TranscribeSchema>> {
   const prompt =
-    'Nghe đoạn ghi âm tiếng Trung Giản thể đính kèm và chép lại CHÍNH XÁC những gì người nói phát âm (không tự sửa lỗi của họ, giữ nguyên chữ Hán giản thể tương ứng với âm họ nói). ' +
-    'Trả về JSON: { "transcript": "chữ Hán giản thể", "pinyin": "pinyin người nói phát âm", "toneTipVi": "nhận xét ngắn 1 câu về thanh điệu/phát âm bằng tiếng Việt" }.';
+    lang === 'vi-VN'
+      ? 'Nghe đoạn ghi âm tiếng Việt (có thể xen vài từ tiếng Trung) đính kèm và chép lại CHÍNH XÁC nội dung người nói. ' +
+        'Trả về JSON: { "transcript": "nội dung chép lời chính xác", "pinyin": "", "toneTipVi": "" }.'
+      : 'Nghe đoạn ghi âm tiếng Trung Giản thể đính kèm và chép lại CHÍNH XÁC những gì người nói phát âm (không tự sửa lỗi của họ, giữ nguyên chữ Hán giản thể tương ứng với âm họ nói). ' +
+        'Trả về JSON: { "transcript": "chữ Hán giản thể", "pinyin": "pinyin người nói phát âm", "toneTipVi": "nhận xét ngắn 1 câu về thanh điệu/phát âm bằng tiếng Việt" }.';
 
   const res = await callGeminiStructured({
     taskType: 'stt-audio',

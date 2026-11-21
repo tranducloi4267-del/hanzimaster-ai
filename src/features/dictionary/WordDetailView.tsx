@@ -4,6 +4,7 @@ import {
   BookmarkCheck,
   BookmarkPlus,
   CheckCircle2,
+  Flag,
   Layers,
   Loader2,
   Mic,
@@ -16,6 +17,7 @@ import { db } from '@/db/database';
 import { parseUsageDetails } from '@/services/dictionary/dictionaryService';
 import { speakChinese } from '@/services/tts/ttsService';
 import {
+  markWordForgotten,
   recordStudyActivity,
   setVocabStatus,
   toggleUserVocab
@@ -149,6 +151,19 @@ export const WordDetailView: React.FC<WordDetailViewProps> = ({
         ? `Đã đánh dấu "${entry.simplified}" là Đã thuộc!`
         : `Đã chuyển "${entry.simplified}" về Đang học.`,
       'success'
+    );
+  };
+
+  const handleToggleForgotten = async () => {
+    if (!entry) return;
+    const nextVal = !Boolean(userVocab?.isForgotten || userVocab?.isLeech);
+    const updated = await markWordForgotten(entry.id, entry.simplified, nextVal, 'forgotten');
+    setUserVocab(updated);
+    pushToast(
+      nextVal
+        ? `Đã thêm "${entry.simplified}" vào mục Từ quên theo mức độ!`
+        : `Đã bỏ "${entry.simplified}" khỏi danh sách Từ quên.`,
+      nextVal ? 'warning' : 'success'
     );
   };
 
@@ -297,6 +312,21 @@ export const WordDetailView: React.FC<WordDetailViewProps> = ({
                   <span>+ Sổ học FSRS</span>
                 </>
               )}
+            </button>
+
+            <button
+              type="button"
+              onClick={handleToggleForgotten}
+              className={`inline-flex items-center gap-1.5 rounded-xl border px-3 py-2 text-xs font-semibold transition ${
+                userVocab?.isForgotten || userVocab?.isLeech
+                  ? 'bg-amber-500 border-amber-500 text-white shadow-sm'
+                  : 'border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/50 text-amber-800 dark:text-amber-300 hover:bg-amber-100'
+              }`}
+            >
+              <Flag className="w-4 h-4" />
+              <span>
+                {userVocab?.isForgotten || userVocab?.isLeech ? 'Đã thêm Từ quên' : '+ Từ quên'}
+              </span>
             </button>
 
             <button

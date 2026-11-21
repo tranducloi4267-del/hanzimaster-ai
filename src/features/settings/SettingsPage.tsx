@@ -80,8 +80,20 @@ export const SettingsPage: React.FC = () => {
       await updateSettings({ geminiApiKey: apiKeyInput.trim() });
       const res = await testGeminiConnection(apiKeyInput.trim(), settings.geminiPrimaryModel);
       setTestResult({ ok: res.ok, msg: res.message });
-      if (res.ok && res.modelUsed !== settings.geminiPrimaryModel) {
-        await updateSettings({ geminiPrimaryModel: res.modelUsed });
+      const patch: Partial<typeof settings> = {};
+      if (res.availableModels && res.availableModels.length > 0) {
+        patch.availableModels = res.availableModels;
+      }
+      if (res.ok && res.modelUsed) {
+        patch.geminiPrimaryModel = res.modelUsed;
+      } else if (res.recommendedPrimary) {
+        patch.geminiPrimaryModel = res.recommendedPrimary;
+      }
+      if (res.recommendedLite) {
+        patch.geminiLiteModel = res.recommendedLite;
+      }
+      if (Object.keys(patch).length > 0) {
+        await updateSettings(patch);
       }
     } finally {
       setTestingKey(false);
@@ -233,16 +245,19 @@ export const SettingsPage: React.FC = () => {
 
           <div>
             <label className="block text-xs font-semibold text-slate-500 mb-1.5">
-              Cấp độ HSK mục tiêu cho Bài khóa ngày
+              Cấp độ HSK mặc định (đồng bộ Hôm nay, Trò chơi &amp; Gia sư AI)
             </label>
             <select
               value={settings.targetHskLevel}
               onChange={(e) => updateSettings({ targetHskLevel: Number(e.target.value) })}
               className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-bold"
             >
-              {[1, 2, 3, 4, 5, 6].map((lv) => (
+              {Array.from(
+                { length: settings.hskStandard === 'hsk3' ? 9 : 6 },
+                (_, i) => i + 1
+              ).map((lv) => (
                 <option key={lv} value={lv}>
-                  HSK {lv}
+                  {settings.hskStandard === 'hsk3' ? `HSK 3.0 · Cấp ${lv}` : `HSK ${lv}`}
                 </option>
               ))}
             </select>
@@ -536,7 +551,11 @@ export const SettingsPage: React.FC = () => {
             ) : (
               <Database className="w-4 h-4" />
             )}
-            <span>Nạp gói Từ điển Mở rộng (&gt;9.500 chữ qua Web Worker)</span>
+            <span>
+              {storage && storage.graphicsCount >= 5000
+                ? 'Đã tích hợp sẵn kho Mở rộng (Bấm để đồng bộ lại nếu cần)'
+                : 'Nạp / Đồng bộ kho Từ điển Mở rộng (>9.500 chữ)'}
+            </span>
           </button>
 
           <button

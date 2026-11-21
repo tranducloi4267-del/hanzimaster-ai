@@ -39,6 +39,9 @@ export class HanziMasterDB extends Dexie {
       studyLogs: 'date',
       settings: 'key'
     });
+    this.version(2).stores({
+      userVocab: 'id, wordId, simplified, status, isLeech, isForgotten, nextReviewAt, source, addedAt'
+    });
   }
 }
 

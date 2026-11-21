@@ -101,11 +101,69 @@ export async function setVocabStatus(
     ...item,
     status,
     isLeech: status === 'mastered' ? false : item.isLeech,
+    isForgotten: status === 'mastered' ? false : item.isForgotten,
+    forgottenAt: status === 'mastered' ? undefined : item.forgottenAt,
     nextReviewAt: status === 'mastered' ? now + 30 * 86400 * 1000 : item.nextReviewAt,
     updatedAt: now
   };
   await db.userVocab.put(updated);
   return updated;
+}
+
+/**
+ * Đánh dấu hoặc bỏ đánh dấu một từ vào danh sách "Từ quên theo mức độ".
+ */
+export async function markWordForgotten(
+  wordId: string,
+  simplified: string,
+  forgotten: boolean,
+  source: VocabSource = 'forgotten'
+): Promise<UserVocabItem> {
+  const { item } = await addOrGetUserVocab(wordId, simplified, source);
+  const now = Date.now();
+  const updated: UserVocabItem = {
+    ...item,
+    isForgotten: forgotten,
+    forgottenAt: forgotten ? now : undefined,
+    status: forgotten ? 'learning' : item.status,
+    nextReviewAt: forgotten ? now : item.nextReviewAt,
+    updatedAt: now
+  };
+  await db.userVocab.put(updated);
+  return updated;
+}
+
+export interface ForgottenWordEntry {
+  vocab: UserVocabItem;
+  entry: DictionaryEntry;
+  effectiveLevel: number;
+}
+
+/**
+ * Lấy danh sách toàn bộ từ quên (gồm từ tự đánh dấu quên hoặc từ sai nhiều/tử huyệt) kèm thông tin từ điển & cấp độ HSK.
+ */
+export async function getForgottenWordsWithEntries(
+  hskStandard: 'hsk2' | 'hsk3' = 'hsk2'
+): Promise<ForgottenWordEntry[]> {
+  const all = await db.userVocab.toArray();
+  const flagged = all.filter((v) => v.isForgotten || v.isLeech);
+  flagged.sort(
+    (a, b) => (b.forgottenAt || b.updatedAt || b.addedAt) - (a.forgottenAt || a.updatedAt || a.addedAt)
+  );
+
+  const results: ForgottenWordEntry[] = [];
+  for (const vocab of flagged) {
+    let entry = await db.dictionary.get(vocab.wordId);
+    if (!entry) {
+      entry = await db.dictionary.where('simplified').equals(vocab.simplified).first();
+    }
+    if (entry) {
+      const effectiveLevel =
+        hskStandard === 'hsk3' ? entry.hsk3Level || entry.hskLevel || 0 : entry.hskLevel || 0;
+      results.push({ vocab, entry, effectiveLevel });
+    }
+  }
+  return results;
 }
 
 export interface ReviewResult {
@@ -161,6 +219,8 @@ export async function recordVocabReview(
     wrongCount,
     reviewCount: item.reviewCount + 1,
     isLeech,
+    isForgotten: isWrong ? true : status === 'mastered' ? false : item.isForgotten,
+    forgottenAt: isWrong ? now.getTime() : status === 'mastered' ? undefined : item.forgottenAt,
     nextReviewAt: nextCard.due.getTime(),
     updatedAt: now.getTime()
   };

@@ -66,12 +66,13 @@ export function stopSpeaking(): void {
   }
 }
 
-async function playAudioBlob(blob: Blob): Promise<void> {
+async function playAudioBlob(blob: Blob, playbackRate = 1.0): Promise<void> {
   stopSpeaking();
   return new Promise<void>((resolve, reject) => {
     const url = URL.createObjectURL(blob);
     currentObjectUrl = url;
     const audio = new Audio(url);
+    audio.playbackRate = Math.max(0.6, Math.min(1.4, playbackRate));
     currentAudio = audio;
 
     const cleanup = () => {
@@ -90,7 +91,7 @@ async function playAudioBlob(blob: Blob): Promise<void> {
     };
     audio.onerror = () => {
       cleanup();
-      reject(new Error('Không thể phát tệp âm thanh'));
+      reject(new Error('Không thể phát tệp âm thanh MP3'));
     };
     audio.play().catch((err) => {
       cleanup();
@@ -117,31 +118,27 @@ export async function enforceAudioCacheLRU(maxMB: number): Promise<void> {
   }
 }
 
-async function fetchEdgeTtsBlob(
+async function fetchOnlineTtsBlob(
   text: string,
   voice: string,
   rate: number,
   proxyUrl?: string
 ): Promise<Blob | null> {
-  // 1. Electron Desktop: Main Process IPC trực tiếp (0đ, 0 server)
+  // 1. Electron Windows Desktop: Main Process IPC (Edge WS -> tự động dự phòng HTTP MP3 0đ)
   if (typeof window !== 'undefined' && window.electronAPI?.synthesizeEdgeTts) {
     const b64 = await window.electronAPI.synthesizeEdgeTts({ text, voice, rate });
-    return base64ToBlob(b64, 'audio/mpeg');
+    if (b64) return base64ToBlob(b64, 'audio/mpeg');
   }
 
-  // 2. Android Capacitor Native Plugin (OkHttp WebSocket trực tiếp 0đ)
+  // 2. Android Capacitor Native Plugin (OkHttp Edge WS -> tự động dự phòng HTTP MP3 0đ)
   if (Capacitor.isNativePlatform() && Capacitor.getPlatform() === 'android') {
-    try {
-      const res = await EdgeTtsNative.synthesize({ text, voice, rate });
-      if (res?.audioBase64) {
-        return base64ToBlob(res.audioBase64, 'audio/mpeg');
-      }
-    } catch {
-      // Fall through to proxy or native TTS
+    const res = await EdgeTtsNative.synthesize({ text, voice, rate });
+    if (res?.audioBase64) {
+      return base64ToBlob(res.audioBase64, 'audio/mpeg');
     }
   }
 
-  // 3. Tùy chọn Proxy URL do người dùng tự cấu hình (hoặc Vite dev middleware khi chạy local)
+  // 3. Proxy URL hoặc Vite dev middleware
   const endpoint = proxyUrl?.trim() || (import.meta.env.DEV ? '/api/edge-tts' : '');
   if (endpoint) {
     const resp = await fetch(endpoint, {
@@ -151,17 +148,30 @@ async function fetchEdgeTtsBlob(
     });
     if (resp.ok) {
       const blob = await resp.blob();
-      if (blob.size > 0) return blob;
+      if (blob.size > 128) return blob;
     }
   }
 
   return null;
 }
 
+async function getSpeechVoicesAsync(): Promise<SpeechSynthesisVoice[]> {
+  if (typeof window === 'undefined' || !('speechSynthesis' in window)) return [];
+  const existing = window.speechSynthesis.getVoices();
+  if (existing.length > 0) return existing;
+  return new Promise((resolve) => {
+    const timer = window.setTimeout(() => resolve(window.speechSynthesis.getVoices()), 450);
+    window.speechSynthesis.onvoiceschanged = () => {
+      window.clearTimeout(timer);
+      resolve(window.speechSynthesis.getVoices());
+    };
+  });
+}
+
 async function speakWithFallbackNativeOrWeb(text: string, rate: number): Promise<void> {
   stopSpeaking();
 
-  // Android/iOS Native TTS (hoạt động cả offline!)
+  // Android/iOS Native TTS (hoạt động cả offline nếu máy đã có dữ liệu giọng zh-CN)
   if (Capacitor.isNativePlatform()) {
     await TextToSpeech.speak({
       text,
@@ -174,37 +184,55 @@ async function speakWithFallbackNativeOrWeb(text: string, rate: number): Promise
     return;
   }
 
-  // Web Speech API fallback
+  // Web Speech API fallback (kiểm tra chắc chắn máy có giọng zh-CN để không im lặng)
   if (typeof window !== 'undefined' && 'speechSynthesis' in window) {
+    const voices = await getSpeechVoicesAsync();
+    const zhVoice =
+      voices.find((v) => v.lang.toLowerCase() === 'zh-cn' && v.name.includes('Microsoft')) ||
+      voices.find((v) => v.lang.toLowerCase().startsWith('zh-cn')) ||
+      voices.find((v) => v.lang.toLowerCase().startsWith('zh'));
+
+    if (!zhVoice && voices.length > 0) {
+      throw new Error(
+        'Máy chưa cài gói giọng tiếng Trung Offline. Hãy bật kết nối mạng (chấm xanh Online) để app tự phát âm chuẩn và lưu cache Offline!'
+      );
+    }
+
     await new Promise<void>((resolve, reject) => {
       const utter = new SpeechSynthesisUtterance(text);
       utter.lang = 'zh-CN';
       utter.rate = Math.max(0.6, Math.min(1.3, rate));
-      const voices = window.speechSynthesis.getVoices();
-      const zhVoice =
-        voices.find((v) => v.lang.toLowerCase() === 'zh-cn' && v.name.includes('Microsoft')) ||
-        voices.find((v) => v.lang.toLowerCase().startsWith('zh-cn')) ||
-        voices.find((v) => v.lang.toLowerCase().startsWith('zh'));
       if (zhVoice) utter.voice = zhVoice;
-      utter.onend = () => resolve();
-      utter.onerror = (e) => reject(new Error(e.error || 'Lỗi Web Speech TTS'));
+
+      const guardTimer = window.setTimeout(() => resolve(), Math.max(8000, text.length * 450));
+      utter.onend = () => {
+        window.clearTimeout(guardTimer);
+        resolve();
+      };
+      utter.onerror = (e) => {
+        window.clearTimeout(guardTimer);
+        reject(new Error(e.error || 'Lỗi Web Speech TTS'));
+      };
       window.speechSynthesis.speak(utter);
     });
     return;
   }
 
-  throw new Error('Thiết bị không hỗ trợ phát âm TTS');
+  throw new Error('Thiết bị không hỗ trợ phát âm TTS Offline.');
 }
 
 export interface SpeakOptions {
   voice?: string;
   rate?: number;
   forceNative?: boolean;
+  silentError?: boolean;
 }
 
 /**
- * Phát âm tiếng Trung ưu tiên 0đ đa tầng:
- * Audio Cache IndexedDB -> Microsoft Edge TTS (Online) -> Native / Web Speech API (Offline fallback).
+ * Phát âm tiếng Trung 0đ đa tầng (chắc chắn có tiếng trên cả Windows .exe & Android .apk):
+ * 1. Audio Cache IndexedDB (0ms kể cả khi Offline)
+ * 2. Online MP3 0đ qua Electron IPC / Android OkHttp (Edge Neural TTS -> tự động fallback Google/Youdao MP3) + lưu cache LRU
+ * 3. Native / Web Speech API (Offline fallback) — báo thông báo rõ nếu máy Offline và thiếu gói giọng Trung.
  */
 export async function speakChinese(
   rawText: string,
@@ -213,7 +241,7 @@ export async function speakChinese(
   const text = rawText.trim();
   if (!text) return 'native';
 
-  const { settings, isOnline } = useAppStore.getState();
+  const { settings, pushToast } = useAppStore.getState();
   const voice = options.voice || settings.ttsVoice || 'zh-CN-XiaoxiaoNeural';
   const rate = options.rate ?? settings.ttsRate ?? 0.95;
   const textHash = hashString(`${text}|${voice}|${rate.toFixed(2)}`);
@@ -222,9 +250,9 @@ export async function speakChinese(
   if (!options.forceNative) {
     try {
       const cached = await db.audioCache.get(textHash);
-      if (cached && cached.audioBlob && cached.audioBlob.size > 0) {
+      if (cached && cached.audioBlob && cached.audioBlob.size > 128) {
         await db.audioCache.update(textHash, { lastAccessedAt: Date.now() });
-        await playAudioBlob(cached.audioBlob);
+        await playAudioBlob(cached.audioBlob, 1.0);
         return 'cache';
       }
     } catch {
@@ -232,11 +260,11 @@ export async function speakChinese(
     }
   }
 
-  // 2. Nếu Online, thử Microsoft Edge TTS và lưu cache LRU vào IndexedDB
-  if (isOnline && !options.forceNative) {
+  // 2. Luôn thử tầng Online MP3 (kể cả khi trạng thái mạng vừa hồi phục chưa kịp ping lại)
+  if (!options.forceNative && (typeof navigator === 'undefined' || navigator.onLine !== false)) {
     try {
-      const blob = await fetchEdgeTtsBlob(text, voice, rate, settings.ttsProxyUrl);
-      if (blob && blob.size > 0) {
+      const blob = await fetchOnlineTtsBlob(text, voice, rate, settings.ttsProxyUrl);
+      if (blob && blob.size > 128) {
         const now = Date.now();
         await db.audioCache.put({
           textHash,
@@ -249,7 +277,7 @@ export async function speakChinese(
           lastAccessedAt: now
         });
         enforceAudioCacheLRU(settings.maxAudioCacheMB || 50).catch(() => {});
-        await playAudioBlob(blob);
+        await playAudioBlob(blob, 1.0);
         return 'edge';
       }
     } catch {
@@ -258,8 +286,19 @@ export async function speakChinese(
   }
 
   // 3. Fallback mượt sang Capacitor Native TTS / Web Speech API
-  await speakWithFallbackNativeOrWeb(text, rate);
-  return 'native';
+  try {
+    await speakWithFallbackNativeOrWeb(text, rate);
+    return 'native';
+  } catch (err) {
+    const msg =
+      err instanceof Error
+        ? err.message
+        : 'Không thể phát âm khi Offline (thiếu gói giọng tiếng Trung trên máy).';
+    if (!options.silentError) {
+      pushToast(msg, 'warning');
+    }
+    throw err;
+  }
 }
 
 export async function clearAudioCache(): Promise<number> {

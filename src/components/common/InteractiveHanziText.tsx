@@ -4,6 +4,7 @@ import {
   BookmarkCheck,
   BookmarkPlus,
   ExternalLink,
+  Flag,
   Mic,
   Volume2,
   X,
@@ -12,7 +13,7 @@ import {
 import { db } from '@/db/database';
 import { segmentChineseText } from '@/services/dictionary/tokenizer';
 import { speakChinese } from '@/services/tts/ttsService';
-import { toggleUserVocab } from '@/services/fsrs/fsrsService';
+import { markWordForgotten, toggleUserVocab } from '@/services/fsrs/fsrsService';
 import { useAppStore } from '@/stores/useAppStore';
 import { useDisplayStore } from '@/stores/useDisplayStore';
 import type { DictionaryEntry, HanziGraphic } from '@/types';
@@ -35,6 +36,7 @@ interface LookupData {
   entry: DictionaryEntry | null;
   graphic: HanziGraphic | null;
   saved: boolean;
+  forgotten: boolean;
 }
 
 /**
@@ -100,12 +102,14 @@ export const InteractiveHanziText: React.FC<InteractiveHanziTextProps> = ({
         }
         const firstChar = Array.from(query).find(isHanziChar) || query[0];
         const graphic = firstChar ? (await db.hanziGraphics.get(firstChar)) || null : null;
-        const saved = entry
-          ? Boolean(await db.userVocab.where('wordId').equals(entry.id).first())
-          : false;
+        const uv = entry
+          ? await db.userVocab.where('wordId').equals(entry.id).first()
+          : undefined;
+        const saved = Boolean(uv);
+        const forgotten = Boolean(uv?.isForgotten || uv?.isLeech);
 
         if (!cancelled) {
-          setLookup({ query, entry, graphic, saved });
+          setLookup({ query, entry, graphic, saved, forgotten });
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -145,12 +149,27 @@ export const InteractiveHanziText: React.FC<InteractiveHanziTextProps> = ({
       return;
     }
     const res = await toggleUserVocab(lookup.entry.id, lookup.entry.simplified, 'lookup');
-    setLookup((prev) => (prev ? { ...prev, saved: res === 'added' } : prev));
+    setLookup((prev) =>
+      prev ? { ...prev, saved: res === 'added', forgotten: res === 'added' ? prev.forgotten : false } : prev
+    );
     pushToast(
       res === 'added'
         ? `Đã thêm "${lookup.entry.simplified}" vào Sổ ôn FSRS`
         : `Đã bỏ "${lookup.entry.simplified}" khỏi Sổ ôn`,
       res === 'added' ? 'success' : 'info'
+    );
+  };
+
+  const handleToggleForgotten = async () => {
+    if (!lookup?.entry) return;
+    const nextVal = !lookup.forgotten;
+    await markWordForgotten(lookup.entry.id, lookup.entry.simplified, nextVal, 'forgotten');
+    setLookup((prev) => (prev ? { ...prev, saved: true, forgotten: nextVal } : prev));
+    pushToast(
+      nextVal
+        ? `Đã thêm "${lookup.entry.simplified}" vào mục Từ quên theo mức độ!`
+        : `Đã gỡ "${lookup.entry.simplified}" khỏi danh sách Từ quên.`,
+      nextVal ? 'warning' : 'success'
     );
   };
 
@@ -383,6 +402,19 @@ export const InteractiveHanziText: React.FC<InteractiveHanziTextProps> = ({
                       <span>+ Lưu vào sổ ôn</span>
                     </>
                   )}
+                </button>
+
+                <button
+                  type="button"
+                  onClick={handleToggleForgotten}
+                  className={`inline-flex items-center gap-1.5 rounded-lg px-2.5 py-1.5 text-xs font-semibold transition ${
+                    lookup.forgotten
+                      ? 'bg-amber-500 text-white hover:bg-amber-600'
+                      : 'bg-amber-50 dark:bg-amber-950/60 text-amber-800 dark:text-amber-300 border border-amber-200 dark:border-amber-800 hover:bg-amber-100'
+                  }`}
+                >
+                  <Flag className="w-3.5 h-3.5" />
+                  <span>{lookup.forgotten ? 'Đang ở Từ quên' : '+ Quên từ'}</span>
                 </button>
 
                 <button

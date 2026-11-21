@@ -115,9 +115,10 @@ export const ShadowingModal: React.FC = () => {
     setEvaluation(null);
 
     try {
-      const session = await startChineseSpeechSession();
+      const session = await startChineseSpeechSession({ lang: 'zh-CN' });
       sessionRef.current = session;
       setRecording(true);
+      pushToast('🎙️ Đang bật Mic — đọc xong bấm lần 2 để tắt & chấm điểm.', 'info');
     } catch (err) {
       pushToast(err instanceof Error ? err.message : 'Không thể bật Micro', 'error');
     }

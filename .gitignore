@@ -8,3 +8,4 @@ android/
 .env
 .env.local
 public/data/full-*.json
+public/data/full-*.json.gz

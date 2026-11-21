@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, safeStorage, shell } from 'electron';
+import { app, BrowserWindow, ipcMain, safeStorage, session, shell } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import { synthesizeEdgeTts, type EdgeTtsOptions } from './edgeTts';
 
@@ -53,6 +54,15 @@ if (!gotLock) {
   });
 
   app.whenReady().then(() => {
+    // Tự động cấp quyền Microphone & Audio cho các tính năng Luyện nói / Gia sư AI
+    session.defaultSession.setPermissionRequestHandler((_webContents, permission, callback) => {
+      if (permission === 'media' || permission === 'clipboard-read') {
+        callback(true);
+      } else {
+        callback(false);
+      }
+    });
+
     createWindow();
 
     app.on('activate', () => {
@@ -73,6 +83,29 @@ app.on('window-all-closed', () => {
 ipcMain.handle('edge-tts:synthesize', async (_event, options: EdgeTtsOptions) => {
   const audioBuffer = await synthesizeEdgeTts(options);
   return audioBuffer.toString('base64');
+});
+
+// IPC: Đọc gói từ điển & nét chữ nén đóng gói sẵn trong dist/data (hoạt động chắc chắn với file://)
+const ALLOWED_DATA_FILES = new Set([
+  'full-dictionary.json.gz',
+  'full-graphics.json.gz',
+  'full-dictionary.json',
+  'full-graphics.json'
+]);
+
+ipcMain.handle('local-asset:read-data', async (_event, fileName: string) => {
+  if (!ALLOWED_DATA_FILES.has(fileName)) return null;
+  const candidates = [
+    path.join(__dirname, '../dist/data', fileName),
+    path.join(__dirname, '../public/data', fileName)
+  ];
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      const buf = await fs.promises.readFile(candidate);
+      return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+    }
+  }
+  return null;
 });
 
 // IPC: Mã hóa/giải mã API Key cục bộ an toàn bằng Windows DPAPI (safeStorage)

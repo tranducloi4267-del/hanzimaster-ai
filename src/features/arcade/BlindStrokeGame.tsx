@@ -1,5 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
-import { SkipForward, Volume2 } from 'lucide-react';
+import { CheckCircle2, Eye, Lightbulb, Volume2 } from 'lucide-react';
 import type { DictionaryEntry } from '@/types';
 import { speakChinese } from '@/services/tts/ttsService';
 import { Rating, recordStudyActivity, recordVocabReview } from '@/services/fsrs/fsrsService';
@@ -8,16 +8,23 @@ import { PeekableText } from '@/components/common/PeekableText';
 import { HanziStrokePlayer } from '@/features/writing/HanziStrokePlayer';
 import { isHanziChar } from '@/utils/pinyin';
 import { shuffleArray } from './arcadeUtils';
+import { GameNavFooter } from './GameNavFooter';
 
 interface BlindStrokeGameProps {
   words: DictionaryEntry[];
   onFinish: (stats: { correct: number; total: number; exp: number }) => void;
 }
 
+interface BlindWordRecord {
+  mistakes: number;
+  skipped: boolean;
+  isGood: boolean;
+}
+
 /**
  * Game 6: Muscle Memory — Luyện viết mù (Blind Stroke Challenge)
- * Hiện nghĩa + phát âm (ẩn hoàn toàn mặt chữ), viết từng nét trên hanzi-writer không bóng mờ
- * (chỉ gợi ý 1 nét nếu sai 2 lần liên tiếp).
+ * Nâng cấp: Không tự nhảy câu vội, hiện giải thích mặt chữ/Pinyin/Hán-Việt sau khi viết xong,
+ * có nút Viết lại từ này & quay lại Từ trước / sang Từ tiếp theo.
  */
 export const BlindStrokeGame: React.FC<BlindStrokeGameProps> = ({ words, onFinish }) => {
   const hardcoreMode = useDisplayStore((s) => s.hardcoreMode);
@@ -32,10 +39,12 @@ export const BlindStrokeGame: React.FC<BlindStrokeGameProps> = ({ words, onFinis
   const [wordIdx, setWordIdx] = useState(0);
   const [charIdx, setCharIdx] = useState(0);
   const [wordMistakes, setWordMistakes] = useState(0);
-  const [correctCount, setCorrectCount] = useState(0);
+  const [attemptVersion, setAttemptVersion] = useState(0);
+  const [history, setHistory] = useState<Record<number, BlindWordRecord>>({});
   const [totalExp, setTotalExp] = useState(0);
 
   const currentWord = deck[wordIdx];
+  const record = history[wordIdx] || null;
   const chars = useMemo(
     () => (currentWord ? Array.from(currentWord.simplified).filter(isHanziChar) : []),
     [currentWord]
@@ -43,13 +52,16 @@ export const BlindStrokeGame: React.FC<BlindStrokeGameProps> = ({ words, onFinis
   const activeChar = chars[charIdx] || '';
 
   useEffect(() => {
-    if (currentWord) {
-      speakChinese(currentWord.simplified).catch(() => {});
+    setCharIdx(0);
+    setWordMistakes(0);
+    if (currentWord && !history[wordIdx]) {
+      speakChinese(currentWord.simplified, { silentError: true }).catch(() => {});
     }
-  }, [currentWord]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wordIdx]);
 
-  const finishCurrentWord = async (mistakes: number, skipped = false) => {
-    if (!currentWord) return;
+  const completeWord = async (mistakes: number, skipped = false) => {
+    if (!currentWord || record) return;
     const isGood = !skipped && mistakes <= 3;
     const grade = skipped
       ? Rating.Again
@@ -59,24 +71,17 @@ export const BlindStrokeGame: React.FC<BlindStrokeGameProps> = ({ words, onFinis
           ? Rating.Good
           : Rating.Hard;
 
+    setHistory((prev) => ({
+      ...prev,
+      [wordIdx]: { mistakes, skipped, isGood }
+    }));
+
     const res = await recordVocabReview(currentWord.id, currentWord.simplified, grade, {
       hardcore: hardcoreMode,
       baseExp: 15
     });
-
-    const nextCorrect = isGood ? correctCount + 1 : correctCount;
-    const nextExp = totalExp + res.expEarned;
-    setCorrectCount(nextCorrect);
-    setTotalExp(nextExp);
-
-    if (wordIdx + 1 >= deck.length) {
-      await recordStudyActivity({ gamesPlayed: 1 });
-      onFinish({ correct: nextCorrect, total: deck.length, exp: nextExp });
-    } else {
-      setWordIdx((w) => w + 1);
-      setCharIdx(0);
-      setWordMistakes(0);
-    }
+    setTotalExp((e) => e + res.expEarned);
+    speakChinese(currentWord.simplified, { silentError: true }).catch(() => {});
   };
 
   const handleCharComplete = async ({ totalMistakes }: { totalMistakes: number }) => {
@@ -84,11 +89,30 @@ export const BlindStrokeGame: React.FC<BlindStrokeGameProps> = ({ words, onFinis
     setWordMistakes(accMistakes);
 
     if (charIdx + 1 < chars.length) {
-      window.setTimeout(() => setCharIdx((c) => c + 1), 650);
+      setCharIdx((c) => c + 1);
     } else {
-      window.setTimeout(() => {
-        finishCurrentWord(accMistakes, false);
-      }, 850);
+      await completeWord(accMistakes, false);
+    }
+  };
+
+  const handleRetryWord = () => {
+    setHistory((prev) => {
+      const next = { ...prev };
+      delete next[wordIdx];
+      return next;
+    });
+    setCharIdx(0);
+    setWordMistakes(0);
+    setAttemptVersion((v) => v + 1);
+  };
+
+  const handleNext = async () => {
+    if (wordIdx + 1 >= deck.length) {
+      const correctCount = Object.values(history).filter((h) => h.isGood).length;
+      await recordStudyActivity({ gamesPlayed: 1 });
+      onFinish({ correct: correctCount, total: deck.length, exp: totalExp });
+    } else {
+      setWordIdx((w) => w + 1);
     }
   };
 
@@ -99,7 +123,7 @@ export const BlindStrokeGame: React.FC<BlindStrokeGameProps> = ({ words, onFinis
       <div className="flex items-center justify-between text-xs font-bold text-slate-500">
         <span>Trí nhớ cơ bắp · Viết mù từng nét</span>
         <span>
-          Từ {wordIdx + 1}/{deck.length} (Chữ {charIdx + 1}/{chars.length})
+          Từ {wordIdx + 1}/{deck.length} (Chữ {Math.min(charIdx + 1, chars.length)}/{chars.length})
         </span>
       </div>
 
@@ -138,43 +162,88 @@ export const BlindStrokeGame: React.FC<BlindStrokeGameProps> = ({ words, onFinis
             Nghe phát âm ({chars.length} chữ)
           </button>
 
-          {/* Tiến độ từng chữ trong từ ghép */}
           {chars.length > 1 && (
             <div className="flex items-center justify-center gap-1.5 pt-2">
-              {chars.map((ch, idx) => (
+              {chars.map((ch, i) => (
                 <span
-                  key={idx}
+                  key={i}
                   className={`w-9 h-9 rounded-lg flex items-center justify-center font-hanzi text-lg font-bold border ${
-                    idx < charIdx
+                    record || i < charIdx
                       ? 'bg-emerald-100 border-emerald-400 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-200'
-                      : idx === charIdx
+                      : i === charIdx
                         ? 'bg-brand-600 border-brand-600 text-white'
                         : 'bg-slate-100 dark:bg-slate-800 border-slate-200 dark:border-slate-700 text-slate-400'
                   }`}
                 >
-                  {idx < charIdx ? ch : '?'}
+                  {record || i < charIdx ? ch : '?'}
                 </span>
               ))}
             </div>
           )}
         </div>
 
-        <HanziStrokePlayer
-          key={`${currentWord.id}-${charIdx}`}
-          char={activeChar}
-          mode="quiz"
-          blindMode={true}
-          size={250}
-          onQuizComplete={handleCharComplete}
-        />
+        {!record ? (
+          <>
+            <HanziStrokePlayer
+              key={`${currentWord.id}-${charIdx}-${attemptVersion}`}
+              char={activeChar}
+              mode="quiz"
+              blindMode={true}
+              size={250}
+              onQuizComplete={handleCharComplete}
+            />
+            <button
+              type="button"
+              onClick={() => completeWord(wordMistakes + 5, true)}
+              className="inline-flex items-center gap-1.5 text-xs font-semibold text-slate-500 hover:text-amber-600"
+            >
+              <Eye className="w-3.5 h-3.5" /> Quên mặt chữ — Hiện đáp án &amp; đưa vào Từ quên
+            </button>
+          </>
+        ) : (
+          <div className="w-full rounded-2xl bg-emerald-50/70 dark:bg-emerald-950/35 border border-emerald-200 dark:border-emerald-800 p-4 text-left space-y-2 text-xs">
+            <div className="flex items-center justify-between gap-2">
+              <div className="font-bold text-sm flex items-center gap-1.5 text-emerald-800 dark:text-emerald-300">
+                <CheckCircle2 className="w-5 h-5" />
+                <span>
+                  {record.skipped
+                    ? `Đáp án chữ cần nhớ: ${currentWord.simplified} (đã tự lưu vào Từ quên)`
+                    : `Hoàn thành viết "${currentWord.simplified}" (${record.mistakes} lỗi nét)!`}
+                </span>
+              </div>
+              <span className="font-hanzi text-3xl font-bold text-brand-600">
+                {currentWord.simplified}
+              </span>
+            </div>
+            <div className="flex items-start gap-1.5 text-slate-700 dark:text-slate-300">
+              <Lightbulb className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <div>
+                <strong>Ghi nhớ mặt chữ:</strong>{' '}
+                <strong className="font-hanzi text-sm">{currentWord.simplified}</strong> (
+                {currentWord.pinyin}
+                {currentWord.hanViet ? ` · Hán-Việt: ${currentWord.hanViet}` : ''}) —{' '}
+                {currentWord.meanings.join('; ')}. Bộ thủ chính:{' '}
+                <strong className="font-hanzi">{currentWord.radical || '—'}</strong> (
+                {currentWord.strokesCount} nét).
+              </div>
+            </div>
+          </div>
+        )}
 
-        <button
-          type="button"
-          onClick={() => finishCurrentWord(wordMistakes + 5, true)}
-          className="inline-flex items-center gap-1 text-xs font-semibold text-slate-400 hover:text-rose-500"
-        >
-          <SkipForward className="w-3.5 h-3.5" /> Quên hẳn chữ này — bỏ qua & ôn lại sớm
-        </button>
+        <div className="w-full">
+          <GameNavFooter
+            currentIndex={wordIdx}
+            total={deck.length}
+            canGoPrev={wordIdx > 0}
+            canGoNext={Boolean(record)}
+            isLast={wordIdx + 1 >= deck.length}
+            showRetry={Boolean(record)}
+            onPrev={() => setWordIdx((w) => Math.max(0, w - 1))}
+            onRetry={handleRetryWord}
+            onNext={handleNext}
+            nextLabel={wordIdx + 1 >= deck.length ? 'Hoàn thành luyện viết' : 'Từ tiếp theo'}
+          />
+        </div>
       </div>
     </div>
   );

@@ -159,10 +159,16 @@ async function main() {
     return;
   }
 
-  // Ghi full graphics cho Web Worker nạp vào IndexedDB
-  const fullGfxPath = path.join(outDataDir, 'full-graphics.json');
-  fs.writeFileSync(fullGfxPath, JSON.stringify(allGraphics), 'utf8');
-  console.log(`✓ Đã xuất ${allGraphics.length} chữ nét vẽ đầy đủ -> public/data/full-graphics.json`);
+  // Ghi full graphics nén gzip (.json.gz) để đóng gói thẳng vào APK & EXE gọn nhẹ (~5-6 MB)
+  const fullGfxGzPath = path.join(outDataDir, 'full-graphics.json.gz');
+  const gfxJsonBuf = Buffer.from(JSON.stringify(allGraphics), 'utf8');
+  const gfxGzBuf = zlib.gzipSync(gfxJsonBuf, { level: 9 });
+  fs.writeFileSync(fullGfxGzPath, gfxGzBuf);
+  const rawGfxOld = path.join(outDataDir, 'full-graphics.json');
+  if (fs.existsSync(rawGfxOld)) fs.unlinkSync(rawGfxOld);
+  console.log(
+    `✓ Đã xuất ${allGraphics.length} chữ nét vẽ nén (${(gfxGzBuf.length / 1024 / 1024).toFixed(2)} MB) -> public/data/full-graphics.json.gz`
+  );
 
   // Tải HSK 1–6 & HSK 3.0 từ drkameleon/complete-hsk-vocabulary
   const hskMap = new Map();
@@ -239,10 +245,16 @@ async function main() {
     idx++;
   }
 
-  const fullDictPath = path.join(outDataDir, 'full-dictionary.json');
-  fs.writeFileSync(fullDictPath, JSON.stringify(fullEntries), 'utf8');
-  console.log(`✓ Đã xuất ${fullEntries.length} mục từ điển -> public/data/full-dictionary.json`);
-  console.log('=== Hoàn tất! Mở mục Cài đặt trong HanziMaster AI để nạp gói mở rộng vào IndexedDB ===');
+  const fullDictGzPath = path.join(outDataDir, 'full-dictionary.json.gz');
+  const dictJsonBuf = Buffer.from(JSON.stringify(fullEntries), 'utf8');
+  const dictGzBuf = zlib.gzipSync(dictJsonBuf, { level: 9 });
+  fs.writeFileSync(fullDictGzPath, dictGzBuf);
+  const rawDictOld = path.join(outDataDir, 'full-dictionary.json');
+  if (fs.existsSync(rawDictOld)) fs.unlinkSync(rawDictOld);
+  console.log(
+    `✓ Đã xuất ${fullEntries.length} mục từ điển nén (${(dictGzBuf.length / 1024 / 1024).toFixed(2)} MB) -> public/data/full-dictionary.json.gz`
+  );
+  console.log('=== Hoàn tất! Gói từ điển mở rộng đã sẵn sàng đóng gói trực tiếp vào APK & EXE ===');
 }
 
 main().catch((err) => {

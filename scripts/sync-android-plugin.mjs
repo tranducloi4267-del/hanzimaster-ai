@@ -39,7 +39,7 @@ public class MainActivity extends BridgeActivity {
   }
 }
 
-// 3. Đảm bảo app/build.gradle có thư viện OkHttp cho WebSocket Edge TTS
+// 3. Đảm bảo app/build.gradle có thư viện OkHttp cho WebSocket Edge TTS & HTTP fallback
 const buildGradlePath = path.join(androidRoot, 'app', 'build.gradle');
 if (fs.existsSync(buildGradlePath)) {
   let gradle = fs.readFileSync(buildGradlePath, 'utf8');
@@ -53,13 +53,16 @@ if (fs.existsSync(buildGradlePath)) {
   }
 }
 
-// 4. Đảm bảo quyền INTERNET & RECORD_AUDIO & CAMERA trong AndroidManifest.xml
+// 4. Đảm bảo quyền INTERNET, RECORD_AUDIO, CAMERA, MODIFY_AUDIO_SETTINGS
+//    VÀ khai báo <queries> cho RecognitionService + TTS (BẮT BUỘC trên Android 11-15 / API 30-35!)
 const manifestPath = path.join(androidRoot, 'app', 'src', 'main', 'AndroidManifest.xml');
 if (fs.existsSync(manifestPath)) {
   let manifest = fs.readFileSync(manifestPath, 'utf8');
   const perms = [
     'android.permission.INTERNET',
+    'android.permission.ACCESS_NETWORK_STATE',
     'android.permission.RECORD_AUDIO',
+    'android.permission.MODIFY_AUDIO_SETTINGS',
     'android.permission.CAMERA'
   ];
   let modified = false;
@@ -72,8 +75,23 @@ if (fs.existsSync(manifestPath)) {
       modified = true;
     }
   }
+
+  // Android 11+ (API 30-35) yêu cầu khai báo <queries> thì SpeechRecognizer & TextToSpeech mới nhìn thấy service hệ thống!
+  if (!manifest.includes('android.speech.RecognitionService')) {
+    const queriesBlock = `    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.intent.action.TTS_SERVICE" />
+        </intent>
+    </queries>\n    <application`;
+    manifest = manifest.replace('<application', queriesBlock);
+    modified = true;
+  }
+
   if (modified) {
     fs.writeFileSync(manifestPath, manifest, 'utf8');
-    console.log('✓ Đã bổ sung quyền INTERNET/RECORD_AUDIO/CAMERA vào AndroidManifest.xml');
+    console.log('✓ Đã bổ sung quyền & <queries> RecognitionService/TTS_SERVICE vào AndroidManifest.xml');
   }
 }

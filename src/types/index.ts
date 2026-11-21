@@ -67,7 +67,7 @@ export interface HanziGraphic {
 }
 
 export type VocabStatus = 'new' | 'learning' | 'mastered';
-export type VocabSource = 'hsk' | 'lookup' | 'document' | 'lesson' | 'exam';
+export type VocabSource = 'hsk' | 'lookup' | 'document' | 'lesson' | 'exam' | 'forgotten';
 
 export interface UserVocabItem {
   id: string;
@@ -78,6 +78,8 @@ export interface UserVocabItem {
   wrongCount: number;
   reviewCount: number;
   isLeech: boolean;
+  isForgotten?: boolean;
+  forgottenAt?: number;
   source: VocabSource;
   customNote?: string;
   addedAt: number;
@@ -133,7 +135,13 @@ export interface LessonItem {
   level: number;
   contentJson: string;
   targetWords: string[];
-  sourceType: 'daily-ai' | 'daily-offline' | 'document';
+  sourceType:
+    | 'daily-ai'
+    | 'daily-offline'
+    | 'document'
+    | 'curated'
+    | 'forgotten-ai'
+    | 'forgotten-offline';
   completed: boolean;
   createdAt: number;
 }
@@ -270,13 +278,14 @@ export const DEFAULT_APP_SETTINGS: AppSettings = {
   targetHskLevel: 1,
   dailyWordGoal: 10,
   geminiApiKey: '',
-  geminiPrimaryModel: 'gemini-3.8-flash',
+  geminiPrimaryModel: 'gemini-3.6-flash',
   geminiLiteModel: 'gemini-3.5-flash-lite',
   availableModels: [
-    'gemini-3.8-flash',
-    'gemini-3.6-flash',
     'gemini-3.5-flash-lite',
-    'gemini-2.5-flash'
+    'gemini-3.6-flash',
+    'gemini-3.8-flash',
+    'gemini-2.5-flash',
+    'gemini-2.5-flash-lite'
   ],
   dailyAiCallDate: '',
   dailyAiCallCount: 0,
@@ -303,6 +312,7 @@ export interface ElectronBridgeAPI {
     voice?: string;
     rate?: number;
   }) => Promise<string>;
+  readBundledDataAsset?: (fileName: string) => Promise<Uint8Array | null>;
   isSecureStorageAvailable: () => Promise<boolean>;
   encryptSecret: (plainText: string) => Promise<string>;
   decryptSecret: (payload: string) => Promise<string>;

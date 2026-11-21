@@ -8,6 +8,7 @@ export interface ElectronAPI {
     voice?: string;
     rate?: number;
   }) => Promise<string>;
+  readBundledDataAsset: (fileName: string) => Promise<Uint8Array | null>;
   isSecureStorageAvailable: () => Promise<boolean>;
   encryptSecret: (plainText: string) => Promise<string>;
   decryptSecret: (payload: string) => Promise<string>;
@@ -17,6 +18,7 @@ const api: ElectronAPI = {
   isElectron: true,
   platform: process.platform,
   synthesizeEdgeTts: (options) => ipcRenderer.invoke('edge-tts:synthesize', options),
+  readBundledDataAsset: (fileName) => ipcRenderer.invoke('local-asset:read-data', fileName),
   isSecureStorageAvailable: () => ipcRenderer.invoke('secure-storage:is-available'),
   encryptSecret: (plainText) => ipcRenderer.invoke('secure-storage:encrypt', plainText),
   decryptSecret: (payload) => ipcRenderer.invoke('secure-storage:decrypt', payload)

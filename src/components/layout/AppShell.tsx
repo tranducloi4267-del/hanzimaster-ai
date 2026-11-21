@@ -45,6 +45,7 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
   const {
     settings,
     updateSettings,
+    fullDbProgress,
     splitView,
     openSplitDictionary,
     closeSplitView,
@@ -281,6 +282,18 @@ export const AppShell: React.FC<AppShellProps> = ({ children }) => {
               </NavLink>
             </div>
           </div>
+          {fullDbProgress.active && (
+            <div className="px-3 sm:px-5 py-1.5 bg-indigo-50 dark:bg-indigo-950/60 border-t border-indigo-100 dark:border-indigo-900 flex items-center gap-3 text-[11px] font-semibold text-indigo-700 dark:text-indigo-300">
+              <span className="truncate flex-1">{fullDbProgress.message}</span>
+              <span className="shrink-0">{fullDbProgress.percent}%</span>
+              <div className="w-24 h-1.5 rounded-full bg-indigo-200 dark:bg-indigo-900 overflow-hidden shrink-0">
+                <div
+                  className="h-full bg-indigo-600 transition-all"
+                  style={{ width: `${fullDbProgress.percent}%` }}
+                />
+              </div>
+            </div>
+          )}
         </header>
 
         {/* Workspace + Optional Desktop Split-View */}

@@ -15,10 +15,13 @@ import { computeShadowingDiff } from '@/services/stt/sttService';
 import { db } from '@/db/database';
 import { searchDictionary, invalidateDictionaryCache } from '@/services/dictionary/dictionaryService';
 import {
+  getForgottenWordsWithEntries,
   LEECH_THRESHOLD,
+  markWordForgotten,
   Rating,
   recordVocabReview
 } from '@/services/fsrs/fsrsService';
+import { CURATED_LESSONS } from '@/data/curatedLessons';
 import { buildBackupPayload, importBackupJson } from '@/services/backup/backupService';
 import { RequestQueue } from '@/services/ai/geminiClient';
 
@@ -155,5 +158,36 @@ describe('HanziMaster AI — Kiểm thử lõi Offline-First', () => {
     const backupText = JSON.stringify(safeBackup);
     const imported = await importBackupJson(backupText, 'merge');
     expect(imported.vocabCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it('Kho 30 bài khóa dựng sẵn phủ đủ 6 cấp độ HSK 1–6 để học ngay Offline', () => {
+    expect(CURATED_LESSONS.length).toBeGreaterThanOrEqual(30);
+    for (let lv = 1; lv <= 6; lv++) {
+      const forLv = CURATED_LESSONS.filter((l) => l.level === lv);
+      expect(forLv.length).toBeGreaterThanOrEqual(5);
+      for (const l of forLv) {
+        expect(l.content.lines.length).toBeGreaterThanOrEqual(3);
+        expect(l.content.questions.length).toBeGreaterThanOrEqual(1);
+      }
+    }
+  });
+
+  it('Mục Từ quên theo mức độ lưu đúng cấp HSK và cho phép gỡ khi đã nhớ', async () => {
+    await db.userVocab.clear();
+    const hsk1 = getEmbeddedDictionaryEntries().find((e) => e.hskLevel === 1)!;
+    const hsk2 = getEmbeddedDictionaryEntries().find((e) => e.hskLevel === 2)!;
+
+    await markWordForgotten(hsk1.id, hsk1.simplified, true);
+    await markWordForgotten(hsk2.id, hsk2.simplified, true);
+
+    let list = await getForgottenWordsWithEntries('hsk2');
+    expect(list.length).toBe(2);
+    expect(list.some((x) => x.entry.id === hsk1.id && x.effectiveLevel === 1)).toBe(true);
+    expect(list.some((x) => x.entry.id === hsk2.id && x.effectiveLevel === 2)).toBe(true);
+
+    await markWordForgotten(hsk1.id, hsk1.simplified, false);
+    list = await getForgottenWordsWithEntries('hsk2');
+    expect(list.length).toBe(1);
+    expect(list[0].entry.id).toBe(hsk2.id);
   });
 });

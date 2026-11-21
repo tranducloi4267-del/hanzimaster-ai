@@ -1,13 +1,16 @@
 import { db, getSetting, setSetting } from './database';
 import { getEmbeddedDictionaryEntries } from '@/data/embeddedWords';
 import { setTokenizerVocabulary } from '@/services/dictionary/tokenizer';
-import type { DictWorkerProgress } from '@/workers/dictLoader.worker';
+import { invalidateDictionaryCache } from '@/services/dictionary/dictionaryService';
+import { invalidateHandwritingIndex } from '@/services/handwriting/matcher';
+import type { DictWorkerProgress, DictWorkerRequest } from '@/workers/dictLoader.worker';
 import type { HanziGraphic } from '@/types';
 
-const CORE_SEED_VERSION = 'v1.0.0';
+const CORE_SEED_VERSION = 'v1.1.0';
+const FULL_DB_VERSION = 'v1.1.0';
 
 /**
- * Đảm bảo cơ sở dữ liệu IndexedDB luôn có sẵn bộ từ điển lõi (520+ từ HSK 1–3 chuẩn tiếng Việt)
+ * Đảm bảo cơ sở dữ liệu IndexedDB luôn có sẵn bộ từ điển lõi (HSK 1–3 chuẩn tiếng Việt)
  * và dữ liệu nét vẽ MakeMeAHanzi thực ngay lần mở đầu tiên, kể cả khi hoàn toàn offline.
  */
 export async function ensureCoreDatabaseSeeded(
@@ -36,12 +39,10 @@ export async function ensureCoreDatabaseSeeded(
     onProgress?.(90, 'Đang lập chỉ mục tìm kiếm nhanh...');
   }
 
-  // Nạp toàn bộ từ vào bộ tách từ <InteractiveHanziText> (Longest-Match)
-  const allWords = await db.dictionary.toCollection().primaryKeys();
-  const simplifiedList = (await db.dictionary.toArray()).map((d) => d.simplified);
-  setTokenizerVocabulary(simplifiedList);
+  const allEntries = await db.dictionary.toArray();
+  setTokenizerVocabulary(allEntries.map((d) => d.simplified));
 
-  const finalDictCount = allWords.length;
+  const finalDictCount = allEntries.length;
   const finalGfxCount = await db.hanziGraphics.count();
   onProgress?.(100, `Sẵn sàng (${finalDictCount.toLocaleString('vi-VN')} mục từ)`);
 
@@ -50,11 +51,37 @@ export async function ensureCoreDatabaseSeeded(
 
 /**
  * Nạp gói từ điển mở rộng (>9.500 chữ MakeMeAHanzi + CC-CEDICT + HSK 1–6 & 3.0)
- * bằng Web Worker (bulkPut theo lô 750 dòng) để không làm đơ giao diện di động.
+ * được đóng gói sẵn (.json.gz) ngay trong APK & EXE bằng Web Worker (không đơ giao diện).
  */
-export function importFullDatabaseViaWorker(
+export async function importFullDatabaseViaWorker(
   onProgress: (p: DictWorkerProgress) => void
 ): Promise<{ dictCount: number; graphicsCount: number }> {
+  // Nếu chạy trên Electron Windows (.exe), đọc trực tiếp tệp nén từ dist/data qua IPC để tránh giới hạn fetch(file://) trong Web Worker
+  let dictBuffer: ArrayBuffer | undefined;
+  let graphicsBuffer: ArrayBuffer | undefined;
+
+  if (typeof window !== 'undefined' && window.electronAPI?.readBundledDataAsset) {
+    try {
+      const dBytes =
+        (await window.electronAPI.readBundledDataAsset('full-dictionary.json.gz')) ||
+        (await window.electronAPI.readBundledDataAsset('full-dictionary.json'));
+      if (dBytes && dBytes.byteLength > 20) {
+        dictBuffer = dBytes.slice().buffer;
+      }
+      const gBytes =
+        (await window.electronAPI.readBundledDataAsset('full-graphics.json.gz')) ||
+        (await window.electronAPI.readBundledDataAsset('full-graphics.json'));
+      if (gBytes && gBytes.byteLength > 20) {
+        graphicsBuffer = gBytes.slice().buffer;
+      }
+    } catch {
+      // Fallback sang fetch URL bên dưới
+    }
+  }
+
+  const base = import.meta.env.BASE_URL || './';
+  const normalizedBase = base.endsWith('/') ? base : `${base}/`;
+
   return new Promise((resolve, reject) => {
     const worker = new Worker(new URL('../workers/dictLoader.worker.ts', import.meta.url), {
       type: 'module'
@@ -65,12 +92,14 @@ export function importFullDatabaseViaWorker(
       onProgress(data);
       if (data.type === 'DONE') {
         worker.terminate();
-        // Cập nhật lại tokenizer sau khi nạp xong Full DB
-        const simplifiedList = (await db.dictionary.toArray()).map((d) => d.simplified);
-        setTokenizerVocabulary(simplifiedList);
+        invalidateDictionaryCache();
+        invalidateHandwritingIndex();
+        const allEntries = await db.dictionary.toArray();
+        setTokenizerVocabulary(allEntries.map((d) => d.simplified));
+        await setSetting('fullDbLoadedVersion', FULL_DB_VERSION);
         resolve({
-          dictCount: data.dictCount || 0,
-          graphicsCount: data.graphicsCount || 0
+          dictCount: data.dictCount || allEntries.length,
+          graphicsCount: data.graphicsCount || (await db.hanziGraphics.count())
         });
       } else if (data.type === 'ERROR') {
         worker.terminate();
@@ -83,11 +112,54 @@ export function importFullDatabaseViaWorker(
       reject(new Error(err.message || 'Lỗi Web Worker nạp từ điển'));
     };
 
-    const base = import.meta.env.BASE_URL || './';
-    worker.postMessage({
+    const payload: DictWorkerRequest = {
       type: 'LOAD_FULL_DB',
-      dictUrl: `${base}data/full-dictionary.json`,
-      graphicsUrl: `${base}data/full-graphics.json`
-    });
+      dictUrls: [
+        `${normalizedBase}data/full-dictionary.json.gz`,
+        `${normalizedBase}data/full-dictionary.json`,
+        './data/full-dictionary.json.gz',
+        '/data/full-dictionary.json.gz'
+      ],
+      graphicsUrls: [
+        `${normalizedBase}data/full-graphics.json.gz`,
+        `${normalizedBase}data/full-graphics.json`,
+        './data/full-graphics.json.gz',
+        '/data/full-graphics.json.gz'
+      ],
+      dictBuffer,
+      graphicsBuffer
+    };
+
+    const transferables: Transferable[] = [];
+    if (dictBuffer) transferables.push(dictBuffer);
+    if (graphicsBuffer) transferables.push(graphicsBuffer);
+
+    worker.postMessage(payload, transferables);
   });
+}
+
+/**
+ * Tự động giải nén & nạp ngầm kho từ điển mở rộng đóng gói sẵn ngay lần đầu mở app APK / EXE
+ * (người dùng không cần bấm nút tay, mở app lên là có sẵn trong bộ nhớ!).
+ */
+export async function autoLoadBundledFullDatabaseIfAvailable(
+  onProgress?: (p: DictWorkerProgress) => void
+): Promise<{ loaded: boolean; dictCount: number; graphicsCount: number }> {
+  const loadedVer = await getSetting<string>('fullDbLoadedVersion', '');
+  const currentDict = await db.dictionary.count();
+  const currentGfx = await db.hanziGraphics.count();
+
+  if (loadedVer === FULL_DB_VERSION && currentDict >= 5000 && currentGfx >= 5000) {
+    return { loaded: false, dictCount: currentDict, graphicsCount: currentGfx };
+  }
+
+  try {
+    const res = await importFullDatabaseViaWorker((p) => {
+      onProgress?.(p);
+    });
+    return { loaded: true, dictCount: res.dictCount, graphicsCount: res.graphicsCount };
+  } catch {
+    // Nếu đang chạy môi trường dev local chưa chạy npm run build:dict -> giữ nguyên bộ lõi hoạt động mượt, không crash app
+    return { loaded: false, dictCount: currentDict, graphicsCount: currentGfx };
+  }
 }

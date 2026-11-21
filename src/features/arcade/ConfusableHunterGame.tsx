@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { CheckCircle2, Eye, Volume2, XCircle } from 'lucide-react';
+import { CheckCircle2, Eye, Lightbulb, Volume2, XCircle } from 'lucide-react';
 import { CONFUSABLE_GROUPS } from '@/data/confusables';
 import { db } from '@/db/database';
 import { speakChinese } from '@/services/tts/ttsService';
@@ -7,15 +7,20 @@ import { Rating, recordStudyActivity, recordVocabReview } from '@/services/fsrs/
 import { useDisplayStore } from '@/stores/useDisplayStore';
 import { PeekableText } from '@/components/common/PeekableText';
 import { shuffleArray } from './arcadeUtils';
+import { GameNavFooter } from './GameNavFooter';
 
 interface ConfusableHunterGameProps {
   onFinish: (stats: { correct: number; total: number; exp: number }) => void;
 }
 
+interface ConfusableHistoryEntry {
+  pickedHanzi: string;
+  isCorrect: boolean;
+}
+
 /**
  * Game 5: Interleaving — Truy tìm Giả mạo (Confusable Hunter)
- * Cố tình trộn các cặp chữ hình cận tự (买/卖, 己/已, 大/太/天, 人/入/八, 的/地/得, 在/再...)
- * và đồng âm khác nghĩa để chọn đúng theo ngữ cảnh.
+ * Nâng cấp: So sánh trực tiếp chữ chọn nhầm vs chữ đúng + mẹo phân biệt, Làm lại câu này, Câu trước / Tiếp theo.
  */
 export const ConfusableHunterGame: React.FC<ConfusableHunterGameProps> = ({ onFinish }) => {
   const hardcoreMode = useDisplayStore((s) => s.hardcoreMode);
@@ -41,17 +46,22 @@ export const ConfusableHunterGame: React.FC<ConfusableHunterGameProps> = ({ onFi
   }, []);
 
   const [idx, setIdx] = useState(0);
-  const [picked, setPicked] = useState<string | null>(null);
-  const [correctCount, setCorrectCount] = useState(0);
+  const [history, setHistory] = useState<Record<number, ConfusableHistoryEntry>>({});
   const [totalExp, setTotalExp] = useState(0);
 
   const current = rounds[idx];
+  const record = history[idx] || null;
+  const picked = record?.pickedHanzi || null;
 
   const handlePick = async (hanzi: string) => {
     if (!current || picked) return;
-    setPicked(hanzi);
     const isCorrect = hanzi === current.target.hanzi;
-    speakChinese(current.target.exampleSentence).catch(() => {});
+    setHistory((prev) => ({
+      ...prev,
+      [idx]: { pickedHanzi: hanzi, isCorrect }
+    }));
+
+    speakChinese(current.target.exampleSentence, { silentError: true }).catch(() => {});
 
     const dictWord = await db.dictionary
       .where('simplified')
@@ -67,26 +77,31 @@ export const ConfusableHunterGame: React.FC<ConfusableHunterGameProps> = ({ onFi
       );
       exp = res.expEarned;
     }
+    setTotalExp((e) => e + exp);
+  };
 
-    const nextCorrect = isCorrect ? correctCount + 1 : correctCount;
-    const nextExp = totalExp + exp;
-    setCorrectCount(nextCorrect);
-    setTotalExp(nextExp);
+  const handleRetry = () => {
+    setHistory((prev) => {
+      const next = { ...prev };
+      delete next[idx];
+      return next;
+    });
+  };
 
-    window.setTimeout(async () => {
-      if (idx + 1 >= rounds.length) {
-        await recordStudyActivity({ gamesPlayed: 1 });
-        onFinish({ correct: nextCorrect, total: rounds.length, exp: nextExp });
-      } else {
-        setIdx((i) => i + 1);
-        setPicked(null);
-      }
-    }, 1900);
+  const handleNext = async () => {
+    if (idx + 1 >= rounds.length) {
+      const correctCount = Object.values(history).filter((h) => h.isCorrect).length;
+      await recordStudyActivity({ gamesPlayed: 1 });
+      onFinish({ correct: correctCount, total: rounds.length, exp: totalExp });
+    } else {
+      setIdx((i) => i + 1);
+    }
   };
 
   if (!current) return null;
 
   const masked = current.target.exampleSentence.replace(current.target.hanzi, '【 ？ 】');
+  const pickedOption = picked ? current.options.find((o) => o.hanzi === picked) : null;
 
   return (
     <div className="space-y-4">
@@ -164,27 +179,54 @@ export const ConfusableHunterGame: React.FC<ConfusableHunterGameProps> = ({ onFi
           })}
         </div>
 
-        {picked && (
+        {record && (
           <div
-            className={`rounded-xl p-3.5 text-left text-xs space-y-1 ${
-              picked === current.target.hanzi
-                ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-800 dark:text-emerald-200'
-                : 'bg-rose-50 dark:bg-rose-950/50 text-rose-800 dark:text-rose-200'
+            className={`rounded-2xl p-4 text-left text-xs space-y-2 border ${
+              record.isCorrect
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/50 dark:border-emerald-800 dark:text-emerald-100'
+                : 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/50 dark:border-rose-800 dark:text-rose-100'
             }`}
           >
             <div className="font-bold flex items-center gap-1.5 text-sm">
-              {picked === current.target.hanzi ? (
-                <CheckCircle2 className="w-4 h-4" />
+              {record.isCorrect ? (
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
               ) : (
-                <XCircle className="w-4 h-4" />
+                <XCircle className="w-5 h-5 text-rose-600 shrink-0" />
               )}
               <span>
-                Đáp án: {current.target.hanzi} ({current.target.pinyin}) — {current.target.meaningVi}
+                Đáp án đúng: {current.target.hanzi} ({current.target.pinyin}) —{' '}
+                {current.target.meaningVi}
               </span>
             </div>
-            <p>Mẹo phân biệt: {current.target.tipVi}</p>
+
+            <div className="flex items-start gap-1.5 leading-relaxed">
+              <Lightbulb className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div>
+                  <strong>Vì sao chọn {current.target.hanzi}:</strong> {current.target.tipVi}
+                </div>
+                {!record.isCorrect && pickedOption && (
+                  <div className="opacity-90">
+                    ⚠️ Bạn vừa chọn <strong className="font-hanzi">{pickedOption.hanzi}</strong> (
+                    {pickedOption.pinyin} — {pickedOption.meaningVi}): {pickedOption.tipVi}
+                  </div>
+                )}
+              </div>
+            </div>
           </div>
         )}
+
+        <GameNavFooter
+          currentIndex={idx}
+          total={rounds.length}
+          canGoPrev={idx > 0}
+          canGoNext={Boolean(record)}
+          isLast={idx + 1 >= rounds.length}
+          showRetry={Boolean(record)}
+          onPrev={() => setIdx((i) => Math.max(0, i - 1))}
+          onRetry={handleRetry}
+          onNext={handleNext}
+        />
       </div>
     </div>
   );

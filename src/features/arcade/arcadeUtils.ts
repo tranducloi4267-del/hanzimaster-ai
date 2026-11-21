@@ -2,7 +2,7 @@ import { db } from '@/db/database';
 import { parseUsageDetails } from '@/services/dictionary/dictionaryService';
 import type { DictionaryEntry, LessonContent } from '@/types';
 
-export type ArcadeSourceType = 'fsrs-due' | 'hsk' | 'lesson' | 'leech';
+export type ArcadeSourceType = 'fsrs-due' | 'hsk' | 'lesson' | 'forgotten' | 'custom';
 
 export interface ArcadeSentence {
   hanzi: string;
@@ -25,6 +25,7 @@ export async function loadArcadeDeck(params: {
   hskLevel?: number;
   hskStandard?: 'hsk2' | 'hsk3';
   lessonId?: string;
+  customWordIds?: string[];
   limit?: number;
 }): Promise<{ words: DictionaryEntry[]; sentences: ArcadeSentence[]; sourceLabel: string }> {
   const limit = params.limit ?? 20;
@@ -32,12 +33,28 @@ export async function loadArcadeDeck(params: {
   const sentences: ArcadeSentence[] = [];
   let sourceLabel = 'Kho từ vựng';
 
-  if (params.source === 'leech') {
-    sourceLabel = 'Phòng cấp cứu từ khó (Tử huyệt)';
-    const leeches = await db.userVocab.filter((v) => v.isLeech).limit(limit).toArray();
-    for (const uv of leeches) {
-      const w = await db.dictionary.get(uv.wordId);
+  if (params.source === 'custom' && params.customWordIds && params.customWordIds.length > 0) {
+    sourceLabel = `Từ quên đã chọn (${params.customWordIds.length} từ)`;
+    for (const id of params.customWordIds) {
+      const w = await db.dictionary.get(id);
       if (w) words.push(w);
+    }
+  } else if (params.source === 'forgotten') {
+    const lv = params.hskLevel || 0;
+    sourceLabel =
+      lv > 0 ? `Từ quên · HSK ${lv}` : 'Từ quên & Tử huyệt (Tất cả cấp độ)';
+    const flagged = await db.userVocab
+      .filter((v) => Boolean(v.isForgotten || v.isLeech))
+      .toArray();
+    for (const uv of flagged) {
+      const w = await db.dictionary.get(uv.wordId);
+      if (!w) continue;
+      if (lv > 0) {
+        const eff = params.hskStandard === 'hsk3' ? w.hsk3Level || w.hskLevel : w.hskLevel;
+        if (eff !== lv) continue;
+      }
+      words.push(w);
+      if (words.length >= limit) break;
     }
   } else if (params.source === 'fsrs-due') {
     sourceLabel = 'Từ đến hạn ôn FSRS';
@@ -96,9 +113,9 @@ export async function loadArcadeDeck(params: {
     words = shuffleArray(filtered.length > 0 ? filtered : all).slice(0, limit);
   }
 
-  // Fallback nhẹ để trò chơi luôn có đủ câu hỏi nếu người dùng mới chưa có từ đến hạn/tử huyệt
+  // Fallback nhẹ để trò chơi luôn có đủ câu hỏi & phương án nhiễu hợp lý
   if (words.length < 6) {
-    const extra = await db.dictionary.orderBy('frequency').limit(40).toArray();
+    const extra = await db.dictionary.orderBy('frequency').limit(60).toArray();
     for (const w of shuffleArray(extra)) {
       if (words.length >= Math.min(limit, 14)) break;
       if (!words.some((x) => x.id === w.id)) {

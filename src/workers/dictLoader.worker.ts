@@ -5,8 +5,10 @@ import { buildSearchTokens, stripPinyinTones } from '@/utils/pinyin';
 
 export interface DictWorkerRequest {
   type: 'LOAD_FULL_DB';
-  dictUrl: string;
-  graphicsUrl: string;
+  dictUrls: string[];
+  graphicsUrls: string[];
+  dictBuffer?: ArrayBuffer;
+  graphicsBuffer?: ArrayBuffer;
 }
 
 export interface DictWorkerProgress {
@@ -20,32 +22,85 @@ export interface DictWorkerProgress {
 
 const BATCH_SIZE = 750;
 
+/**
+ * Giải mã ArrayBuffer có thể là JSON thuần hoặc đã nén GZIP (nhận diện bằng magic bytes 0x1f 0x8b).
+ */
+async function decodeJsonBuffer<T>(buffer: ArrayBuffer): Promise<T> {
+  const bytes = new Uint8Array(buffer);
+  const isGzip = bytes.length >= 2 && bytes[0] === 0x1f && bytes[1] === 0x8b;
+
+  if (isGzip) {
+    if (typeof DecompressionStream === 'undefined') {
+      throw new Error('Trình duyệt không hỗ trợ giải nén GZIP (DecompressionStream).');
+    }
+    const ds = new DecompressionStream('gzip');
+    const stream = new Blob([bytes]).stream().pipeThrough(ds);
+    const text = await new Response(stream).text();
+    return JSON.parse(text) as T;
+  }
+
+  const text = new TextDecoder('utf-8').decode(bytes);
+  return JSON.parse(text) as T;
+}
+
+async function loadAssetJson<T>(
+  preloadedBuffer: ArrayBuffer | undefined,
+  urls: string[]
+): Promise<T | null> {
+  if (preloadedBuffer && preloadedBuffer.byteLength > 20) {
+    return decodeJsonBuffer<T>(preloadedBuffer);
+  }
+  for (const url of urls) {
+    try {
+      const res = await fetch(url);
+      if (res.ok) {
+        const buf = await res.arrayBuffer();
+        if (buf.byteLength > 20) {
+          return await decodeJsonBuffer<T>(buf);
+        }
+      }
+    } catch {
+      // Thử URL dự phòng tiếp theo
+    }
+  }
+  return null;
+}
+
 self.onmessage = async (event: MessageEvent<DictWorkerRequest>) => {
-  const { type, dictUrl, graphicsUrl } = event.data;
+  const { type, dictUrls, graphicsUrls, dictBuffer, graphicsBuffer } = event.data;
   if (type !== 'LOAD_FULL_DB') return;
 
   try {
     postMessage({
       type: 'PROGRESS',
-      percent: 5,
-      message: 'Đang tải tệp từ điển mở rộng...'
+      percent: 4,
+      message: 'Đang giải nén kho từ điển mở rộng tích hợp sẵn...'
     } satisfies DictWorkerProgress);
 
-    let dictCount = 0;
+    let dictAdded = 0;
     let graphicsCount = 0;
 
-    // 1. Load dictionary JSON
-    const dictRes = await fetch(dictUrl);
-    if (!dictRes.ok) {
+    // 1. Nạp Từ điển Mở rộng (giữ nguyên các từ lõi tiếng Việt chuẩn đã có, chỉ bổ sung các từ còn thiếu!)
+    const rawDict = await loadAssetJson<DictionaryEntry[]>(dictBuffer, dictUrls);
+    if (!rawDict || rawDict.length === 0) {
       throw new Error(
-        `Không tìm thấy tệp từ điển mở rộng (${dictRes.status}). Hãy chạy "npm run build:dict" trước.`
+        'Không tìm thấy tệp từ điển mở rộng tích hợp. Hãy cập nhật bản cài đặt mới nhất.'
       );
     }
-    const rawDict: DictionaryEntry[] = await dictRes.json();
-    const totalDict = rawDict.length;
+
+    const existingCore = await db.dictionary.toArray();
+    const existingVietnameseSimplified = new Set<string>();
+    for (const item of existingCore) {
+      if (!item.id.startsWith('ced_')) {
+        existingVietnameseSimplified.add(item.simplified);
+      }
+    }
+
+    const filteredDict = rawDict.filter((e) => !existingVietnameseSimplified.has(e.simplified));
+    const totalDict = filteredDict.length;
 
     for (let i = 0; i < totalDict; i += BATCH_SIZE) {
-      const batch = rawDict.slice(i, i + BATCH_SIZE).map((entry) => {
+      const batch = filteredDict.slice(i, i + BATCH_SIZE).map((entry) => {
         const pinyinNoTone = entry.pinyinNoTone || stripPinyinTones(entry.pinyin);
         return {
           ...entry,
@@ -63,19 +118,24 @@ self.onmessage = async (event: MessageEvent<DictWorkerRequest>) => {
         };
       });
       await db.dictionary.bulkPut(batch);
-      dictCount += batch.length;
-      const percent = Math.min(55, Math.round(10 + (dictCount / Math.max(1, totalDict)) * 45));
+      dictAdded += batch.length;
+      const percent = Math.min(54, Math.round(10 + (dictAdded / Math.max(1, totalDict)) * 44));
       postMessage({
         type: 'PROGRESS',
         percent,
-        message: `Đang nạp từ điển: ${dictCount.toLocaleString('vi-VN')} / ${totalDict.toLocaleString('vi-VN')} mục...`
+        message: `Đang nạp từ điển mở rộng: ${dictAdded.toLocaleString('vi-VN')} / ${totalDict.toLocaleString('vi-VN')} mục...`
       } satisfies DictWorkerProgress);
     }
 
-    // 2. Load MakeMeAHanzi graphics JSON
-    const gfxRes = await fetch(graphicsUrl);
-    if (gfxRes.ok) {
-      const rawGraphics: HanziGraphic[] = await gfxRes.json();
+    // 2. Nạp >9.500 dữ liệu nét vẽ & chiết tự MakeMeAHanzi
+    postMessage({
+      type: 'PROGRESS',
+      percent: 58,
+      message: 'Đang giải nén >9.500 nét vẽ chữ Hán MakeMeAHanzi...'
+    } satisfies DictWorkerProgress);
+
+    const rawGraphics = await loadAssetJson<HanziGraphic[]>(graphicsBuffer, graphicsUrls);
+    if (rawGraphics && rawGraphics.length > 0) {
       const totalGfx = rawGraphics.length;
       for (let i = 0; i < totalGfx; i += BATCH_SIZE) {
         const batch = rawGraphics.slice(i, i + BATCH_SIZE);
@@ -83,7 +143,7 @@ self.onmessage = async (event: MessageEvent<DictWorkerRequest>) => {
         graphicsCount += batch.length;
         const percent = Math.min(
           98,
-          Math.round(55 + (graphicsCount / Math.max(1, totalGfx)) * 43)
+          Math.round(58 + (graphicsCount / Math.max(1, totalGfx)) * 40)
         );
         postMessage({
           type: 'PROGRESS',
@@ -93,12 +153,15 @@ self.onmessage = async (event: MessageEvent<DictWorkerRequest>) => {
       }
     }
 
+    const totalInDb = await db.dictionary.count();
+    const totalGfxInDb = await db.hanziGraphics.count();
+
     postMessage({
       type: 'DONE',
       percent: 100,
-      message: `Hoàn tất nạp ${dictCount.toLocaleString('vi-VN')} mục từ & ${graphicsCount.toLocaleString('vi-VN')} dữ liệu nét chữ!`,
-      dictCount,
-      graphicsCount
+      message: `Hoàn tất! Kho Offline hiện có ${totalInDb.toLocaleString('vi-VN')} mục từ & ${totalGfxInDb.toLocaleString('vi-VN')} nét chữ!`,
+      dictCount: totalInDb,
+      graphicsCount: totalGfxInDb
     } satisfies DictWorkerProgress);
   } catch (err) {
     postMessage({

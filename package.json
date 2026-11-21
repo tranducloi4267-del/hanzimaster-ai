@@ -1,6 +1,6 @@
 {
   "name": "hanzimaster-ai",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "HanziMaster AI — Ứng dụng học tiếng Trung Giản thể All-in-One Offline-First 0đ vận hành",
   "private": true,
   "main": "dist-electron/main.cjs",

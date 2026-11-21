@@ -1,12 +1,23 @@
-import React, { useMemo, useState } from 'react';
-import { CheckCircle2, Keyboard, ListChecks, PenTool, Volume2, XCircle } from 'lucide-react';
+import React, { useEffect, useMemo, useState } from 'react';
+import {
+  CheckCircle2,
+  Keyboard,
+  Lightbulb,
+  ListChecks,
+  PenTool,
+  RotateCcw,
+  Volume2,
+  XCircle
+} from 'lucide-react';
 import type { DictionaryEntry } from '@/types';
+import { parseUsageDetails } from '@/services/dictionary/dictionaryService';
 import { speakChinese } from '@/services/tts/ttsService';
 import { Rating, recordStudyActivity, recordVocabReview } from '@/services/fsrs/fsrsService';
 import { useDisplayStore } from '@/stores/useDisplayStore';
 import { PeekableText } from '@/components/common/PeekableText';
 import { HandwritingPad } from '@/features/writing/HandwritingPad';
 import { shuffleArray, type ArcadeSentence } from './arcadeUtils';
+import { GameNavFooter } from './GameNavFooter';
 
 interface ContextClozeGameProps {
   words: DictionaryEntry[];
@@ -14,9 +25,14 @@ interface ContextClozeGameProps {
   onFinish: (stats: { correct: number; total: number; exp: number }) => void;
 }
 
+interface ClozeHistoryEntry {
+  answerText: string;
+  result: 'correct' | 'wrong';
+}
+
 /**
  * Game 2: Cloze Deletion — Lấp đầy Bài khóa
- * Hỗ trợ đủ 3 cách trả lời: Trắc nghiệm | Gõ chữ | Vẽ tay trực tiếp vào ô trống!
+ * Nâng cấp: Giải thích ngữ cảnh chi tiết, hoàn tác gõ/vẽ, làm lại câu sai, lùi câu trước & tiếp theo.
  */
 export const ContextClozeGame: React.FC<ContextClozeGameProps> = ({
   words,
@@ -36,26 +52,39 @@ export const ContextClozeGame: React.FC<ContextClozeGameProps> = ({
       }));
   }, [sentences, words]);
 
+  const optionsByIdx = useMemo(
+    () =>
+      items.map((it) => {
+        const pool = shuffleArray(words.filter((w) => w.id !== it.targetWord.id)).slice(0, 3);
+        return shuffleArray([it.targetWord, ...pool]);
+      }),
+    [items, words]
+  );
+
   const [idx, setIdx] = useState(0);
   const [inputMode, setInputMode] = useState<'choice' | 'type' | 'draw'>('choice');
   const [typed, setTyped] = useState('');
-  const [result, setResult] = useState<'correct' | 'wrong' | null>(null);
-  const [correctCount, setCorrectCount] = useState(0);
+  const [history, setHistory] = useState<Record<number, ClozeHistoryEntry>>({});
   const [totalExp, setTotalExp] = useState(0);
 
   const current = items[idx];
+  const record = history[idx] || null;
+  const result = record?.result || null;
+  const options = optionsByIdx[idx] || [];
 
-  const options = useMemo(() => {
-    if (!current) return [];
-    const target = current.targetWord;
-    const pool = shuffleArray(words.filter((w) => w.id !== target.id)).slice(0, 3);
-    return shuffleArray([target, ...pool]);
-  }, [current, words]);
+  useEffect(() => {
+    setTyped(history[idx]?.answerText || '');
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [idx]);
 
   const submitAnswer = async (answerText: string) => {
     if (!current || result) return;
-    const isCorrect = answerText.trim() === current.targetWord.simplified;
-    setResult(isCorrect ? 'correct' : 'wrong');
+    const cleaned = answerText.trim();
+    const isCorrect = cleaned === current.targetWord.simplified;
+    setHistory((prev) => ({
+      ...prev,
+      [idx]: { answerText: cleaned, result: isCorrect ? 'correct' : 'wrong' }
+    }));
 
     const res = await recordVocabReview(
       current.targetWord.id,
@@ -63,28 +92,37 @@ export const ContextClozeGame: React.FC<ContextClozeGameProps> = ({
       isCorrect ? (inputMode === 'draw' ? Rating.Easy : Rating.Good) : Rating.Again,
       { hardcore: hardcoreMode, baseExp: inputMode === 'draw' ? 14 : 10 }
     );
-    const nextCorrect = isCorrect ? correctCount + 1 : correctCount;
-    const nextExp = totalExp + res.expEarned;
-    setCorrectCount(nextCorrect);
-    setTotalExp(nextExp);
+    setTotalExp((e) => e + res.expEarned);
+    speakChinese(current.hanzi, { silentError: true }).catch(() => {});
+  };
 
-    speakChinese(current.hanzi).catch(() => {});
+  const handleRetry = () => {
+    setHistory((prev) => {
+      const next = { ...prev };
+      delete next[idx];
+      return next;
+    });
+    setTyped('');
+  };
 
-    window.setTimeout(async () => {
-      if (idx + 1 >= items.length) {
-        await recordStudyActivity({ gamesPlayed: 1 });
-        onFinish({ correct: nextCorrect, total: items.length, exp: nextExp });
-      } else {
-        setIdx((i) => i + 1);
-        setTyped('');
-        setResult(null);
-      }
-    }, 1300);
+  const handleNext = async () => {
+    if (idx + 1 >= items.length) {
+      const correctCount = Object.values(history).filter((h) => h.result === 'correct').length;
+      await recordStudyActivity({ gamesPlayed: 1 });
+      onFinish({ correct: correctCount, total: items.length, exp: totalExp });
+    } else {
+      setIdx((i) => i + 1);
+    }
   };
 
   if (!current) return null;
 
   const parts = current.hanzi.split(current.targetWord.simplified);
+  const usage = parseUsageDetails(current.targetWord);
+  const chosenWrongWord =
+    record && record.result === 'wrong'
+      ? words.find((w) => w.simplified === record.answerText)
+      : undefined;
 
   return (
     <div className="space-y-4">
@@ -157,49 +195,40 @@ export const ContextClozeGame: React.FC<ContextClozeGameProps> = ({
           </div>
         </div>
 
-        {/* Phản hồi đúng/sai */}
-        {result && (
-          <div
-            className={`rounded-xl px-4 py-2.5 text-sm font-semibold flex items-center gap-2 ${
-              result === 'correct'
-                ? 'bg-emerald-50 dark:bg-emerald-950/50 text-emerald-700 dark:text-emerald-300'
-                : 'bg-rose-50 dark:bg-rose-950/50 text-rose-700 dark:text-rose-300'
-            }`}
-          >
-            {result === 'correct' ? (
-              <CheckCircle2 className="w-5 h-5" />
-            ) : (
-              <XCircle className="w-5 h-5" />
-            )}
-            <span>
-              {result === 'correct'
-                ? `Chính xác! "${current.targetWord.simplified}" (${current.targetWord.pinyin})`
-                : `Đáp án đúng là: ${current.targetWord.simplified} (${current.targetWord.pinyin}) — ${current.targetWord.meanings[0]}`}
-            </span>
-          </div>
-        )}
-
         {/* 3 chế độ nhập đáp án */}
         {inputMode === 'choice' && (
           <div className="grid grid-cols-2 gap-2.5">
-            {options.map((opt) => (
-              <button
-                key={opt.id}
-                type="button"
-                disabled={Boolean(result)}
-                onClick={() => submitAnswer(opt.simplified)}
-                className="rounded-xl border-2 border-slate-200 dark:border-slate-700 hover:border-brand-500 p-3.5 text-center transition active:scale-95"
-              >
-                <div className="font-hanzi text-2xl font-bold">{opt.simplified}</div>
-                <PeekableText
-                  kind="pinyin"
-                  forceHide={hardcoreMode}
-                  className="text-xs text-slate-500 mt-0.5"
+            {options.map((opt) => {
+              const isRight = opt.id === current.targetWord.id;
+              const isPicked = record?.answerText === opt.simplified;
+              const cls = result
+                ? isRight
+                  ? 'bg-emerald-50 border-emerald-500 text-emerald-900 dark:bg-emerald-950/60 dark:text-emerald-200'
+                  : isPicked
+                    ? 'bg-rose-50 border-rose-500 text-rose-900 dark:bg-rose-950/60 dark:text-rose-200'
+                    : 'opacity-45 border-slate-200 dark:border-slate-800'
+                : 'border-slate-200 dark:border-slate-700 hover:border-brand-500';
+
+              return (
+                <button
+                  key={opt.id}
+                  type="button"
+                  disabled={Boolean(result)}
+                  onClick={() => submitAnswer(opt.simplified)}
+                  className={`rounded-xl border-2 p-3.5 text-center transition active:scale-95 ${cls}`}
                 >
-                  {opt.pinyin}
-                </PeekableText>
-              </button>
-            ))}
+                  <div className="font-hanzi text-2xl font-bold">{opt.simplified}</div>
+                  <PeekableText
+                    kind="pinyin"
+                    forceHide={hardcoreMode}
+                    className="text-xs text-slate-500 mt-0.5"
+                  >
+                    {opt.pinyin}
+                  </PeekableText>
+                  {result && <div className="text-[11px] opacity-80 mt-0.5">{opt.meanings[0]}</div>}
+                </button>
+              );
+            })}
           </div>
         )}
 
@@ -219,6 +248,16 @@ export const ContextClozeGame: React.FC<ContextClozeGameProps> = ({
               placeholder={`Gõ từ còn thiếu (${current.targetWord.simplified.length} chữ)...`}
               className="flex-1 rounded-xl border border-slate-300 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3.5 py-2.5 font-hanzi text-lg"
             />
+            {typed && !result && (
+              <button
+                type="button"
+                onClick={() => setTyped('')}
+                className="rounded-xl border border-slate-300 dark:border-slate-700 px-3 py-2 text-xs font-semibold"
+                title="Xóa gõ lại"
+              >
+                <RotateCcw className="w-4 h-4" />
+              </button>
+            )}
             <button
               type="submit"
               disabled={!typed.trim() || Boolean(result)}
@@ -239,13 +278,13 @@ export const ContextClozeGame: React.FC<ContextClozeGameProps> = ({
                 </span>
               </div>
               <div className="flex gap-1.5">
-                {typed && (
+                {typed && !result && (
                   <button
                     type="button"
                     onClick={() => setTyped((s) => s.slice(0, -1))}
                     className="rounded-lg border border-slate-300 dark:border-slate-700 px-2 py-1 text-xs font-semibold"
                   >
-                    Xóa 1 chữ
+                    Lùi 1 chữ
                   </button>
                 )}
                 <button
@@ -261,10 +300,71 @@ export const ContextClozeGame: React.FC<ContextClozeGameProps> = ({
             <HandwritingPad
               compact
               height={200}
-              onSelectChar={(ch) => setTyped((prev) => `${prev}${ch}`)}
+              onSelectChar={(ch) => !result && setTyped((prev) => `${prev}${ch}`)}
             />
           </div>
         )}
+
+        {/* Hộp Giải thích chi tiết sau khi trả lời */}
+        {record && (
+          <div
+            className={`rounded-2xl p-4 text-xs space-y-2 border ${
+              record.result === 'correct'
+                ? 'bg-emerald-50 border-emerald-200 text-emerald-900 dark:bg-emerald-950/50 dark:border-emerald-800 dark:text-emerald-100'
+                : 'bg-rose-50 border-rose-200 text-rose-900 dark:bg-rose-950/50 dark:border-rose-800 dark:text-rose-100'
+            }`}
+          >
+            <div className="font-bold text-sm flex items-center gap-1.5">
+              {record.result === 'correct' ? (
+                <CheckCircle2 className="w-5 h-5 text-emerald-600 shrink-0" />
+              ) : (
+                <XCircle className="w-5 h-5 text-rose-600 shrink-0" />
+              )}
+              <span>
+                {record.result === 'correct'
+                  ? `Chính xác! "${current.targetWord.simplified}" (${current.targetWord.pinyin})`
+                  : `Bạn chọn "${record.answerText}" chưa khớp — Đáp án đúng: ${current.targetWord.simplified} (${current.targetWord.pinyin})`}
+              </span>
+            </div>
+
+            <div className="flex items-start gap-1.5 leading-relaxed">
+              <Lightbulb className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                <div>
+                  <strong>Giải thích ngữ cảnh:</strong> Trong câu{' '}
+                  <span className="font-hanzi text-sm font-bold">{current.hanzi}</span> (
+                  {current.pinyin} — <em>"{current.translationVi}"</em>), chỗ trống cần từ{' '}
+                  <strong className="font-hanzi text-sm">{current.targetWord.simplified}</strong>{' '}
+                  ({current.targetWord.pinyin}
+                  {current.targetWord.hanViet ? `, Hán-Việt: ${current.targetWord.hanViet}` : ''}) có
+                  nghĩa là <strong>"{current.targetWord.meanings.join('; ')}"</strong>.
+                  {usage.senses?.[0]?.grammarPattern && (
+                    <span> Cấu trúc: {usage.senses[0].grammarPattern}.</span>
+                  )}
+                </div>
+                {chosenWrongWord && (
+                  <div className="opacity-90">
+                    ⚠️ Từ bạn chọn <strong className="font-hanzi">{chosenWrongWord.simplified}</strong>{' '}
+                    ({chosenWrongWord.pinyin}) nghĩa là <em>"{chosenWrongWord.meanings[0]}"</em> nên
+                    không phù hợp với nghĩa của câu này.
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+
+        <GameNavFooter
+          currentIndex={idx}
+          total={items.length}
+          canGoPrev={idx > 0}
+          canGoNext={Boolean(result)}
+          isLast={idx + 1 >= items.length}
+          showRetry={Boolean(result)}
+          onPrev={() => setIdx((i) => Math.max(0, i - 1))}
+          onRetry={handleRetry}
+          onNext={handleNext}
+        />
       </div>
     </div>
   );

@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react';
 import {
-  AlertTriangle,
   ArrowLeft,
   Award,
   BookOpen,
   Eye,
+  Flag,
   Flame,
   Gamepad2,
   Hammer,
@@ -50,8 +50,8 @@ const GAMES_META: Array<{
     id: 'speed-recall',
     num: 1,
     method: 'Active Recall',
-    title: 'Đấu trường Tốc độ & Lật thẻ 4 chiều',
-    desc: 'Đảo 4 chiều nhìn/nghe/nghĩa/đục lỗ, đếm ngược & Combo FSRS.',
+    title: 'Đấu trường 4 chiều & Lật thẻ',
+    desc: 'Đảo 4 chiều nhìn/nghe/nghĩa/đục lỗ, có giải thích rõ, làm lại & quay lại câu trước.',
     icon: Zap,
     color: 'from-rose-500 to-orange-500'
   },
@@ -69,7 +69,7 @@ const GAMES_META: Array<{
     num: 3,
     method: 'Chunking',
     title: 'Ghép cầu Ngữ pháp',
-    desc: 'Sắp xếp cụm từ xáo trộn đúng trật tự ngữ pháp tiếng Trung.',
+    desc: 'Sắp xếp cụm từ xáo trộn đúng trật tự ngữ pháp tiếng Trung, có lùi bước & giải thích.',
     icon: Puzzle,
     color: 'from-emerald-500 to-teal-500'
   },
@@ -78,7 +78,7 @@ const GAMES_META: Array<{
     num: 4,
     method: 'Dual Coding & Mnemonics',
     title: 'Lò rèn Bộ thủ & Chém Thanh điệu',
-    desc: 'Ghép bộ thủ thành chữ (女+子→好) & vuốt Canvas chém 4 thanh điệu.',
+    desc: 'Ghép bộ thủ thành chữ (女+子→好, chạm ô để sửa) & vuốt Canvas chém 4 thanh điệu.',
     icon: Hammer,
     color: 'from-amber-500 to-yellow-500'
   },
@@ -112,19 +112,32 @@ const GAMES_META: Array<{
 ];
 
 export const ArcadeHubPage: React.FC = () => {
-  const { settings, activeArcadeLessonId, setActiveArcadeLessonId } = useAppStore();
+  const {
+    settings,
+    updateSettings,
+    activeArcadeLessonId,
+    setActiveArcadeLessonId,
+    activeArcadeCustomWordIds,
+    setActiveArcadeCustomWordIds
+  } = useAppStore();
   const { applyPracticeDefaults, hardcoreMode } = useDisplayStore();
 
   const [source, setSource] = useState<ArcadeSourceType>(
-    activeArcadeLessonId ? 'lesson' : 'hsk'
+    activeArcadeCustomWordIds?.length
+      ? 'custom'
+      : activeArcadeLessonId
+        ? 'lesson'
+        : 'hsk'
   );
   const [hskLevel, setHskLevel] = useState<number>(settings.targetHskLevel || 1);
+  const [forgottenLevelFilter, setForgottenLevelFilter] = useState<number>(0); // 0 = tất cả
+  const [customWordIds, setCustomWordIds] = useState<string[]>(activeArcadeCustomWordIds || []);
   const [lessons, setLessons] = useState<LessonItem[]>([]);
   const [selectedLessonId, setSelectedLessonId] = useState<string>(
     activeArcadeLessonId || ''
   );
   const [dueCount, setDueCount] = useState(0);
-  const [leechCount, setLeechCount] = useState(0);
+  const [forgottenCount, setForgottenCount] = useState(0);
 
   const [activeGame, setActiveGame] = useState<GameId | null>(null);
   const [deckWords, setDeckWords] = useState<DictionaryEntry[]>([]);
@@ -134,11 +147,20 @@ export const ArcadeHubPage: React.FC = () => {
     null
   );
 
+  // Đồng bộ cấp độ từ Cài đặt / Hôm nay
+  useEffect(() => {
+    setHskLevel(settings.targetHskLevel || 1);
+  }, [settings.targetHskLevel]);
+
   useEffect(() => {
     (async () => {
-      const allLessons = await db.lessons.orderBy('createdAt').reverse().limit(25).toArray();
+      const allLessons = await db.lessons.orderBy('createdAt').reverse().limit(35).toArray();
       setLessons(allLessons);
-      if (activeArcadeLessonId) {
+      if (activeArcadeCustomWordIds && activeArcadeCustomWordIds.length > 0) {
+        setCustomWordIds(activeArcadeCustomWordIds);
+        setSource('custom');
+        setActiveArcadeCustomWordIds(null);
+      } else if (activeArcadeLessonId) {
         setSource('lesson');
         setSelectedLessonId(activeArcadeLessonId);
         setActiveArcadeLessonId(null);
@@ -147,7 +169,9 @@ export const ArcadeHubPage: React.FC = () => {
       }
       const now = Date.now();
       setDueCount(await db.userVocab.where('nextReviewAt').belowOrEqual(now).count());
-      setLeechCount(await db.userVocab.filter((v) => v.isLeech).count());
+      setForgottenCount(
+        await db.userVocab.filter((v) => Boolean(v.isForgotten || v.isLeech)).count()
+      );
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeGame]);
@@ -156,9 +180,10 @@ export const ArcadeHubPage: React.FC = () => {
     applyPracticeDefaults();
     const deck = await loadArcadeDeck({
       source,
-      hskLevel,
+      hskLevel: source === 'forgotten' ? forgottenLevelFilter : hskLevel,
       hskStandard: settings.hskStandard,
       lessonId: selectedLessonId,
+      customWordIds,
       limit: 20
     });
     setDeckWords(deck.words);
@@ -168,7 +193,6 @@ export const ArcadeHubPage: React.FC = () => {
     setActiveGame(gameId);
   };
 
-  // Màn hình đang chơi 1 trò chơi cụ thể
   if (activeGame) {
     const meta = GAMES_META.find((g) => g.id === activeGame)!;
     return (
@@ -211,7 +235,7 @@ export const ArcadeHubPage: React.FC = () => {
               </div>
             </div>
             <p className="text-xs text-slate-500">
-              Toàn bộ tiến độ ôn tập đã được tự động cập nhật vào lịch FSRS cục bộ.
+              Toàn bộ tiến độ ôn tập đã được tự động cập nhật vào lịch FSRS &amp; mục Từ quên.
             </p>
             <div className="flex justify-center gap-2.5 pt-2">
               <button
@@ -271,6 +295,8 @@ export const ArcadeHubPage: React.FC = () => {
     );
   }
 
+  const maxHsk = settings.hskStandard === 'hsk3' ? 9 : 6;
+
   return (
     <div className="space-y-5">
       <div className="flex flex-wrap items-center justify-between gap-3">
@@ -280,14 +306,14 @@ export const ArcadeHubPage: React.FC = () => {
             <span>Memory Arcade — 7 Phương pháp Ghi nhớ</span>
           </h1>
           <p className="text-xs sm:text-sm text-slate-500 dark:text-slate-400">
-            Mọi lượt chơi đều đồng bộ trực tiếp vào thuật toán lặp lại ngắt quãng FSRS.
+            Làm xong có giải thích chi tiết từng câu, sửa khi bấm nhầm, lùi câu trước &amp; đồng bộ theo cấp HSK.
           </p>
         </div>
       </div>
 
       <DisplayControlBar showHardcoreToggle />
 
-      {/* Bộ chọn nguồn dữ liệu chơi linh hoạt */}
+      {/* Bộ chọn nguồn dữ liệu chơi */}
       <div className="rounded-2xl bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 p-4 shadow-sm space-y-3">
         <div className="text-xs font-bold uppercase tracking-wider text-slate-400">
           1. Chọn nguồn từ vựng để ôn chơi
@@ -295,24 +321,24 @@ export const ArcadeHubPage: React.FC = () => {
         <div className="grid grid-cols-2 lg:grid-cols-4 gap-2">
           {[
             {
-              id: 'fsrs-due',
-              label: `Đến hạn FSRS (${dueCount})`,
-              icon: Flame
-            },
-            {
               id: 'hsk',
               label: `Theo cấp ${settings.hskStandard === 'hsk3' ? 'HSK 3.0' : 'HSK 1–6'}`,
               icon: BookOpen
             },
             {
+              id: 'forgotten',
+              label: `Từ quên theo mức độ (${forgottenCount})`,
+              icon: Flag
+            },
+            {
               id: 'lesson',
-              label: `Bài khóa / Tài liệu (${lessons.length})`,
+              label: `Bài khóa đã mở (${lessons.length})`,
               icon: Layers
             },
             {
-              id: 'leech',
-              label: `Phòng cấp cứu từ khó (${leechCount})`,
-              icon: AlertTriangle
+              id: 'fsrs-due',
+              label: `Đến hạn FSRS (${dueCount})`,
+              icon: Flame
             }
           ].map((opt) => {
             const Icon = opt.icon;
@@ -335,16 +361,34 @@ export const ArcadeHubPage: React.FC = () => {
           })}
         </div>
 
+        {source === 'custom' && customWordIds.length > 0 && (
+          <div className="rounded-xl bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 p-3 flex items-center justify-between gap-2 text-xs text-amber-800 dark:text-amber-200">
+            <span>
+              Đang chọn bộ <strong>{customWordIds.length} từ quên</strong> chuyển từ màn hình Hôm nay. Bấm chọn 1 trò chơi bên dưới để luyện ngay!
+            </span>
+            <button
+              type="button"
+              onClick={() => {
+                setCustomWordIds([]);
+                setSource('hsk');
+              }}
+              className="font-bold underline shrink-0"
+            >
+              Đổi nguồn khác
+            </button>
+          </div>
+        )}
+
         {source === 'hsk' && (
           <div className="flex flex-wrap items-center gap-1.5 pt-1">
-            {Array.from(
-              { length: settings.hskStandard === 'hsk3' ? 9 : 6 },
-              (_, i) => i + 1
-            ).map((lv) => (
+            {Array.from({ length: maxHsk }, (_, i) => i + 1).map((lv) => (
               <button
                 key={lv}
                 type="button"
-                onClick={() => setHskLevel(lv)}
+                onClick={() => {
+                  setHskLevel(lv);
+                  updateSettings({ targetHskLevel: lv });
+                }}
                 className={`px-3 py-1 rounded-lg text-xs font-bold border transition ${
                   hskLevel === lv
                     ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-transparent'
@@ -357,6 +401,41 @@ export const ArcadeHubPage: React.FC = () => {
           </div>
         )}
 
+        {source === 'forgotten' && (
+          <div className="space-y-2 pt-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <button
+                type="button"
+                onClick={() => setForgottenLevelFilter(0)}
+                className={`px-3 py-1 rounded-lg text-xs font-bold border transition ${
+                  forgottenLevelFilter === 0
+                    ? 'bg-amber-500 text-white border-amber-500'
+                    : 'border-slate-200 dark:border-slate-700'
+                }`}
+              >
+                Tất cả cấp độ
+              </button>
+              {Array.from({ length: maxHsk }, (_, i) => i + 1).map((lv) => (
+                <button
+                  key={lv}
+                  type="button"
+                  onClick={() => setForgottenLevelFilter(lv)}
+                  className={`px-3 py-1 rounded-lg text-xs font-bold border transition ${
+                    forgottenLevelFilter === lv
+                      ? 'bg-slate-900 dark:bg-white text-white dark:text-slate-900 border-transparent'
+                      : 'border-slate-200 dark:border-slate-700'
+                  }`}
+                >
+                  HSK {lv}
+                </button>
+              ))}
+            </div>
+            <p className="text-xs text-amber-700 dark:text-amber-300">
+              Ôn tập tập trung các từ bạn đánh dấu <strong>"+ Từ quên"</strong> hoặc từng trả lời sai theo đúng cấp độ HSK.
+            </p>
+          </div>
+        )}
+
         {source === 'lesson' && (
           <select
             value={selectedLessonId}
@@ -364,22 +443,15 @@ export const ArcadeHubPage: React.FC = () => {
             className="w-full rounded-xl border border-slate-200 dark:border-slate-700 bg-slate-50 dark:bg-slate-950 px-3 py-2 text-xs font-medium"
           >
             {lessons.length === 0 ? (
-              <option value="">Chưa có bài khóa — hãy mở mục Hôm nay hoặc Kho Tài liệu</option>
+              <option value="">Chưa có bài khóa — hãy mở 1 bài khóa ở mục Hôm nay</option>
             ) : (
               lessons.map((l) => (
                 <option key={l.id} value={l.id}>
-                  [{l.date}] {l.title} ({l.targetWords.length} từ)
+                  [HSK {l.level}] {l.title} ({l.targetWords.length} từ)
                 </option>
               ))
             )}
           </select>
-        )}
-
-        {source === 'leech' && (
-          <div className="rounded-xl bg-rose-50 dark:bg-rose-950/40 border border-rose-200 dark:border-rose-900/60 p-3 text-xs text-rose-800 dark:text-rose-200">
-            <strong>Phòng cấp cứu từ khó (Leech):</strong> Tự động gom mọi từ bạn từng trả lời sai
-            từ <strong>3 lần trở lên</strong>. Nên luyện theo chuỗi: <em>Lò rèn Bộ thủ → Viết mù → Lấp đầy bài khóa</em>!
-          </div>
         )}
       </div>
 

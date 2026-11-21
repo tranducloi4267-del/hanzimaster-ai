@@ -46,6 +46,9 @@ jobs:
       - name: Cài đặt thư viện
         run: npm install --legacy-peer-deps
 
+      - name: Đóng gói sẵn Kho Từ điển Mở rộng & >9.500 nét chữ (.json.gz)
+        run: npm run build:dict
+
       - name: Đóng gói Windows .exe (NSIS + Portable)
         run: npm run build:win
         env:
@@ -91,10 +94,13 @@ jobs:
       - name: Cài đặt thư viện
         run: npm install --legacy-peer-deps
 
+      - name: Đóng gói sẵn Kho Từ điển Mở rộng & >9.500 nét chữ (.json.gz)
+        run: npm run build:dict
+
       - name: Build giao diện Web production
         run: npm run build:web
 
-      - name: Khởi tạo dự án Android Capacitor 7 & chèn Native EdgeTtsPlugin
+      - name: Khởi tạo dự án Android Capacitor 7 & chèn Native EdgeTtsPlugin + quyền Mic API 35
         run: |
           if [ ! -d "android" ]; then
             npx cap add android

@@ -1,7 +1,11 @@
 import React, { useEffect } from 'react';
 import { HashRouter, Navigate, Route, Routes } from 'react-router-dom';
 import { Loader2 } from 'lucide-react';
-import { ensureCoreDatabaseSeeded } from '@/db/seed';
+import {
+  autoLoadBundledFullDatabaseIfAvailable,
+  ensureCoreDatabaseSeeded
+} from '@/db/seed';
+import { startConnectivityMonitor } from '@/services/network/connectivityService';
 import { useAppStore } from '@/stores/useAppStore';
 import { AppShell } from '@/components/layout/AppShell';
 import { QuickSearchModal } from '@/components/layout/QuickSearchModal';
@@ -50,27 +54,52 @@ class RootErrorBoundary extends React.Component<
 }
 
 export const App: React.FC = () => {
-  const { initApp, dbReady, setDbReady, seedProgress, setSeedProgress, setOnline } = useAppStore();
+  const {
+    initApp,
+    dbReady,
+    setDbReady,
+    seedProgress,
+    setSeedProgress,
+    setFullDbProgress,
+    updateSettings,
+    pushToast
+  } = useAppStore();
 
   useEffect(() => {
-    const onOnline = () => setOnline(true);
-    const onOffline = () => setOnline(false);
-    window.addEventListener('online', onOnline);
-    window.addEventListener('offline', onOffline);
+    const stopMonitor = startConnectivityMonitor();
 
     (async () => {
       await initApp();
-      setSeedProgress({ active: true, percent: 5, message: 'Đang mở cơ sở dữ liệu cục bộ...' });
+      setSeedProgress({ active: true, percent: 10, message: 'Đang mở cơ sở dữ liệu cục bộ...' });
       await ensureCoreDatabaseSeeded((percent, message) => {
         setSeedProgress({ active: percent < 100, percent, message });
       });
       setSeedProgress({ active: false, percent: 100, message: '' });
       setDbReady(true);
+
+      // Tự động giải nén & nạp ngầm kho từ điển mở rộng (>9.500 chữ) đóng gói sẵn ngay lần đầu cài đặt!
+      const autoRes = await autoLoadBundledFullDatabaseIfAvailable((p) => {
+        setFullDbProgress({
+          active: p.type === 'PROGRESS',
+          percent: p.percent,
+          message: p.message
+        });
+      });
+      setFullDbProgress({ active: false, percent: 100, message: '' });
+      if (autoRes.loaded) {
+        await updateSettings({
+          fullDictLoaded: true,
+          fullDictCount: autoRes.dictCount
+        });
+        pushToast(
+          `Đã sẵn sàng kho từ điển mở rộng (${autoRes.dictCount.toLocaleString('vi-VN')} từ & ${autoRes.graphicsCount.toLocaleString('vi-VN')} nét chữ Offline)!`,
+          'success'
+        );
+      }
     })();
 
     return () => {
-      window.removeEventListener('online', onOnline);
-      window.removeEventListener('offline', onOffline);
+      stopMonitor();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
